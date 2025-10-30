@@ -215,7 +215,7 @@ class NetAuditScanner:
         logger.info("")
     
     def scan_networks(self) -> list:
-        """Escanea todas las redes configuradas"""
+        """Escanea todas las redes configuradas CON SINCRONIZACIÓN INCREMENTAL"""
         
         all_devices = []
         
@@ -226,12 +226,39 @@ class NetAuditScanner:
             logger.info("")
             
             try:
-                # Escaneo con Nmap
+                # ========================================
+                # FASE 1: PING SCAN + PLACEHOLDERS
+                # ========================================
+                logger.info("📍 Fase 1: Descubrimiento rápido de hosts...")
+                
+                # Escaneo con Nmap (esto ya hace ping scan interno)
                 devices = self.nmap_scanner.scan_network(network)
                 
-                logger.info(f"✓ Escaneo completado: {len(devices)} dispositivos encontrados")
+                logger.info(f"✓ Descubiertos {len(devices)} hosts activos")
                 logger.info("")
                 
+                # ========================================
+                # 🆕 CREAR PLACEHOLDERS INMEDIATAMENTE
+                # ========================================
+                logger.info("📝 Creando placeholders en Netbox...")
+                placeholders_created = 0
+                
+                for device in devices:
+                    ip = device['ip']
+                    hostname = device.get('hostname', '')
+                    mac = device.get('mac', '')
+                    
+                    # Crear placeholder con tag "Descubierto"
+                    if self.netbox_sync.create_placeholder_ip(ip, hostname, mac):
+                        placeholders_created += 1
+                
+                logger.info(f"✓ {placeholders_created} placeholders creados")
+                logger.info(f"🌐 Ver en Netbox: {self.netbox_url}/ipam/ip-addresses/")
+                logger.info("")
+                
+                # ========================================
+                # CONTINUAR CON ESCANEO NORMAL
+                # ========================================
                 all_devices.extend(devices)
                 self.stats['networks_scanned'] += 1
                 self.stats['devices_found'] += len(devices)
@@ -243,7 +270,7 @@ class NetAuditScanner:
         return all_devices
     
     def enrich_devices(self, devices: list) -> list:
-        """Enriquece información de dispositivos con SNMP y clasificación"""
+        """Enriquece información de dispositivos CON ACTUALIZACIÓN INCREMENTAL"""
         
         logger.info("=" * 60)
         logger.info("🔍 Enriqueciendo información de dispositivos")
@@ -253,7 +280,8 @@ class NetAuditScanner:
         enriched_devices = []
         
         for idx, device in enumerate(devices, 1):
-            logger.info(f"[{idx}/{len(devices)}] Procesando {device['ip']}...")
+            ip = device['ip']
+            logger.info(f"[{idx}/{len(devices)}] Procesando {ip}...")
             logger.info(f"  Hostname: {device.get('hostname', 'N/A')}")
             logger.info(f"  MAC: {device.get('mac', 'N/A')}")
             logger.info(f"  Vendor: {device.get('vendor', 'N/A')}")
@@ -262,10 +290,31 @@ class NetAuditScanner:
                 # Agregar timestamp
                 device['scan_time'] = datetime.now().isoformat()
                 
-                # Descubrimiento SNMP
+                # ========================================
+                # 🆕 ACTUALIZAR: Puertos detectados
+                # ========================================
+                if device.get('ports'):
+                    tcp_ports = [p for p in device['ports'] if isinstance(p, int)]
+                    udp_ports = [str(p).replace('udp/', '') for p in device['ports'] 
+                                if isinstance(p, str) and 'udp/' in str(p)]
+                    
+                    logger.info(f"  📊 Puertos: {len(tcp_ports)} TCP, {len(udp_ports)} UDP")
+                    self.netbox_sync.update_ip_ports(ip, tcp_ports, 
+                                                    [int(p) for p in udp_ports] if udp_ports else [])
+                
+                # ========================================
+                # 🆕 ACTUALIZAR: Servicios identificados
+                # ========================================
+                if device.get('services'):
+                    logger.info(f"  🔧 Servicios: {len(device['services'])} detectados")
+                    self.netbox_sync.update_ip_services(ip, device['services'])
+                
+                # ========================================
+                # SNMP Discovery
+                # ========================================
                 if self.snmp_enabled and self.snmp_discovery:
-                    logger.info(f"  Probando SNMP...")
-                    snmp_info = self.snmp_discovery.query_device(device['ip'])
+                    logger.info(f"  🔍 Probando SNMP...")
+                    snmp_info = self.snmp_discovery.query_device(ip)
                     if snmp_info:
                         device.update(snmp_info)
                         self.stats['devices_with_snmp'] += 1
@@ -273,20 +322,36 @@ class NetAuditScanner:
                     else:
                         logger.info(f"  ○ SNMP no disponible")
                 
+                # ========================================
                 # Clasificación inteligente
-                logger.info(f"  Clasificando dispositivo...")
+                # ========================================
+                logger.info(f"  🏷️  Clasificando dispositivo...")
                 classification = self.classifier.classify(device)
                 device.update(classification)
                 
-                logger.info(f"  ✓ Clasificado como: {classification['device_type']} "
+                logger.info(f"  ✓ Tipo: {classification['device_type']} "
                           f"({classification['confidence']}% confianza)")
                 logger.info(f"  ✓ Rol: {classification['device_role']}")
                 logger.info(f"  ✓ Categoría: {classification['category']}")
                 
+                # ========================================
+                # 🆕 ACTUALIZAR: Información completa
+                # ========================================
+                logger.info(f"  💾 Actualizando info completa en Netbox...")
+                self.netbox_sync.update_ip_complete(ip, device)
+                logger.info(f"  ✅ Completado: {ip}")
+                
                 enriched_devices.append(device)
                 
             except Exception as e:
-                logger.warning(f"  ⚠ Error procesando {device['ip']}: {e}")
+                logger.warning(f"  ⚠ Error procesando {ip}: {e}")
+                
+                # Marcar como error en Netbox
+                try:
+                    self.netbox_sync.update_ip_error(ip, str(e))
+                except:
+                    pass
+                
                 enriched_devices.append(device)  # Agregar de todas formas
             
             logger.info("")
@@ -333,29 +398,6 @@ class NetAuditScanner:
         
         return devices
     
-    def sync_to_netbox(self, devices: list):
-        """Sincroniza dispositivos con Netbox"""
-        
-        logger.info("=" * 60)
-        logger.info("📊 Sincronizando con Netbox")
-        logger.info("=" * 60)
-        logger.info("")
-        
-        try:
-            sync_stats = self.netbox_sync.sync_devices(devices)
-            
-            logger.info("")
-            logger.info("Resultados de sincronización:")
-            logger.info(f"  ✓ Creados: {sync_stats['created']}")
-            logger.info(f"  ✓ Actualizados: {sync_stats['updated']}")
-            logger.info(f"  ✓ Sin cambios: {sync_stats['unchanged']}")
-            if sync_stats['errors'] > 0:
-                logger.warning(f"  ⚠ Errores: {sync_stats['errors']}")
-            
-        except Exception as e:
-            logger.error(f"❌ Error sincronizando con Netbox: {e}")
-            raise
-    
     def print_summary(self):
         """Imprime resumen final del escaneo"""
         
@@ -364,20 +406,26 @@ class NetAuditScanner:
         logger.info("📈 RESUMEN DEL ESCANEO")
         logger.info("=" * 60)
         logger.info("")
-        logger.info(f"Redes escaneadas:      {self.stats['networks_scanned']}")
+        logger.info(f"Redes escaneadas:         {self.stats['networks_scanned']}")
         logger.info(f"Dispositivos encontrados: {self.stats['devices_found']}")
-        logger.info(f"Con SNMP activo:       {self.stats['devices_with_snmp']}")
+        logger.info(f"Con SNMP activo:          {self.stats['devices_with_snmp']}")
         if self.proxmox:
-            logger.info(f"VMs/LXCs Proxmox:      {self.stats['proxmox_vms']}")
-        logger.info(f"Duración:              {self.stats['scan_duration']:.1f} segundos")
+            logger.info(f"VMs/LXCs Proxmox:         {self.stats['proxmox_vms']}")
+        logger.info(f"Duración total:           {self.stats['scan_duration']:.1f} segundos ({self.stats['scan_duration']/60:.1f} minutos)")
+        logger.info("")
+        logger.info("📊 Estadísticas de Netbox:")
+        logger.info(f"  Creados:     {self.netbox_sync.stats['created']}")
+        logger.info(f"  Actualizados: {self.netbox_sync.stats['updated']}")
+        logger.info(f"  Sin cambios:  {self.netbox_sync.stats['unchanged']}")
+        logger.info(f"  Errores:      {self.netbox_sync.stats['errors']}")
         logger.info("")
         logger.info("✅ Escaneo completado exitosamente")
         logger.info("")
-        logger.info(f"🌐 Ver resultados en: {self.netbox_url}")
+        logger.info(f"🌐 Ver resultados en: {self.netbox_url}/ipam/ip-addresses/")
         logger.info("=" * 60)
     
     def run(self):
-        """Ejecuta el escaneo completo"""
+        """Ejecuta el escaneo completo CON SINCRONIZACIÓN INCREMENTAL"""
         
         start_time = datetime.now()
         
@@ -387,7 +435,7 @@ class NetAuditScanner:
                 sys.exit(1)
             
             # ========================================
-            # 🆕 2. BOOTSTRAP DE NETBOX (NUEVO)
+            # 2. BOOTSTRAP DE NETBOX
             # ========================================
             if not self.run_bootstrap():
                 logger.warning("⚠️  Bootstrap falló pero continuando...")
@@ -397,21 +445,23 @@ class NetAuditScanner:
             # 3. Inicializar componentes
             self.initialize_components()
             
-            # 4. Escanear redes
+            # 4. Escanear redes (crea placeholders)
             devices = self.scan_networks()
             
             if not devices:
                 logger.warning("⚠ No se encontraron dispositivos")
                 return
             
-            # 5. Enriquecer con SNMP y clasificación
+            # 5. Enriquecer con SNMP y clasificación (actualiza incrementalmente)
             devices = self.enrich_devices(devices)
             
             # 6. Integrar con Proxmox (opcional)
             devices = self.integrate_proxmox(devices)
             
-            # 7. Sincronizar con Netbox
-            self.sync_to_netbox(devices)
+            # 7. NO HACE FALTA sync_to_netbox - ya se hizo incrementalmente
+            # La sincronización ocurrió en:
+            # - scan_networks() → placeholders con tag "Descubierto"
+            # - enrich_devices() → actualización con tags de estado
             
             # 8. Calcular duración y mostrar resumen
             end_time = datetime.now()

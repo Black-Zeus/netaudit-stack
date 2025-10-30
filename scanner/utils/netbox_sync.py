@@ -1,15 +1,18 @@
 """
-Módulo de sincronización con Netbox - VERSIÓN CORREGIDA
+Módulo de sincronización con Netbox - VERSIÓN CON SINCRONIZACIÓN INCREMENTAL
+Permite actualizar IPs en tiempo real durante el escaneo
 """
 
 import pynetbox
 import logging
-from typing import List, Dict
+from typing import List, Dict, Optional
+from datetime import datetime
 
 logger = logging.getLogger(__name__)
 
+
 class NetboxSync:
-    """Sincroniza dispositivos descubiertos con Netbox"""
+    """Sincroniza dispositivos descubiertos con Netbox - Con soporte incremental"""
     
     def __init__(self, url: str, token: str):
         """
@@ -35,351 +38,376 @@ class NetboxSync:
             'device_roles': {},
             'tags': {}
         }
+        
+        # Referencia al bootstrap (se asigna desde scan.py)
+        self.bootstrap = None
     
     def test_connection(self) -> bool:
         """Prueba la conexión con Netbox"""
         try:
-            # Intentar obtener el status de Netbox
             self.nb.status()
             return True
         except Exception as e:
             logger.error(f"No se pudo conectar con Netbox: {e}")
             return False
     
-    def sync_devices(self, devices: List[Dict]) -> Dict:
+    # ========================================================================
+    # MÉTODOS DE SINCRONIZACIÓN INCREMENTAL (NUEVOS)
+    # ========================================================================
+    
+    def create_placeholder_ip(self, ip: str, hostname: str = '', mac: str = '') -> Optional[object]:
         """
-        Sincroniza lista de dispositivos con Netbox
+        Crea un placeholder de IP con tag "Descubierto"
+        Se ejecuta inmediatamente después del ping scan
         
         Args:
-            devices: Lista de dispositivos descubiertos
+            ip: Dirección IP
+            hostname: Hostname (opcional)
+            mac: MAC address (opcional)
             
         Returns:
-            Estadísticas de sincronización
+            Objeto IP de Netbox o None
         """
-        logger.info(f"Sincronizando {len(devices)} dispositivos con Netbox...")
-        logger.info("")
-        
-        # Reiniciar estadísticas
-        self.stats = {'created': 0, 'updated': 0, 'unchanged': 0, 'errors': 0}
-        
-        # Asegurar que existen los objetos base en Netbox
-        self._ensure_base_objects()
-        
-        for idx, device in enumerate(devices, 1):
-            try:
-                logger.info(f"[{idx}/{len(devices)}] Sincronizando {device['ip']}...")
-                self._sync_device(device)
-            except Exception as e:
-                logger.error(f"  ✗ Error sincronizando {device['ip']}: {e}")
-                self.stats['errors'] += 1
-        
-        logger.info("")
-        return self.stats
-    
-    def _ensure_base_objects(self):
-        """Asegura que existen los objetos base necesarios en Netbox"""
-        
-        logger.info("Verificando objetos base en Netbox...")
-        
-        # Site por defecto
         try:
-            site = self.nb.dcim.sites.get(slug='homelab')
-            if not site:
-                logger.info("  → Creando site 'homelab'...")
-                site = self.nb.dcim.sites.create(
-                    name='HomeLab',
-                    slug='homelab',
-                    description='Red doméstica'
-                )
-            self.cache['site'] = site
-            logger.info(f"  ✓ Site: {site.name}")
-        except Exception as e:
-            logger.error(f"  ✗ Error con site: {e}")
-            raise
-        
-        # Manufacturer genérico
-        try:
-            mfg = self.nb.dcim.manufacturers.get(slug='generic')
-            if not mfg:
-                logger.info("  → Creando manufacturer 'generic'...")
-                mfg = self.nb.dcim.manufacturers.create(
-                    name='Generic',
-                    slug='generic'
-                )
-            self.cache['manufacturer'] = mfg
-            logger.info(f"  ✓ Manufacturer: {mfg.name}")
-        except Exception as e:
-            logger.error(f"  ✗ Error con manufacturer: {e}")
-            raise
-        
-        # Device types básicos
-        device_types = [
-            'Router', 'Switch', 'Access Point', 'Server', 'NAS',
-            'Computer', 'Laptop', 'Smart TV', 'IoT Device', 
-            'Mobile Device', 'Printer', 'IP Camera', 'Unknown',
-            'Network Device'  # Agregar este tipo adicional
-        ]
-        
-        for dt_name in device_types:
-            try:
-                dt_slug = dt_name.lower().replace(' ', '-')
-                dt = self.nb.dcim.device_types.get(slug=dt_slug)
-                if not dt:
-                    logger.info(f"  → Creando device type '{dt_name}'...")
-                    dt = self.nb.dcim.device_types.create(
-                        manufacturer=self.cache['manufacturer'].id,
-                        model=dt_name,
-                        slug=dt_slug
-                    )
-                self.cache['device_types'][dt_slug] = dt
-            except Exception as e:
-                logger.warning(f"  ⚠ Error con device type {dt_name}: {e}")
-        
-        logger.info(f"  ✓ Device Types: {len(self.cache['device_types'])}")
-        
-        # Device roles - IMPORTANTE: crear TODOS incluyendo Unknown
-        roles = [
-            ('Infrastructure', 'infrastructure', 'ff5722'),
-            ('Service', 'service', '2196f3'),
-            ('Workstation', 'workstation', '4caf50'),
-            ('Entertainment', 'entertainment', '9c27b0'),
-            ('IoT', 'iot', 'ff9800'),
-            ('Mobile', 'mobile', '00bcd4'),
-            ('Peripheral', 'peripheral', '795548'),
-            ('Unknown', 'unknown', '9e9e9e'),  # MUY IMPORTANTE
-        ]
-        
-        for role_name, role_slug, role_color in roles:
-            try:
-                role = self.nb.dcim.device_roles.get(slug=role_slug)
-                if not role:
-                    logger.info(f"  → Creando device role '{role_name}'...")
-                    role = self.nb.dcim.device_roles.create(
-                        name=role_name,
-                        slug=role_slug,
-                        color=role_color
-                    )
-                self.cache['device_roles'][role_slug] = role
-            except Exception as e:
-                logger.warning(f"  ⚠ Error con device role {role_name}: {e}")
-        
-        logger.info(f"  ✓ Device Roles: {len(self.cache['device_roles'])}")
-        
-        # Tags para categorías
-        categories = ['Domotica', 'Trabajo', 'Entretenimiento', 'ISP', 'Infrastructure']
-        for cat in categories:
-            try:
-                tag = self.nb.extras.tags.get(slug=cat.lower())
-                if not tag:
-                    logger.info(f"  → Creando tag '{cat}'...")
-                    tag = self.nb.extras.tags.create(
-                        name=cat,
-                        slug=cat.lower()
-                    )
-                self.cache['tags'][cat.lower()] = tag
-            except Exception as e:
-                logger.warning(f"  ⚠ Error con tag {cat}: {e}")
-        
-        logger.info(f"  ✓ Tags: {len(self.cache['tags'])}")
-        logger.info("")
-    
-    def _get_or_create_device_type(self, type_name: str):
-        """Obtiene o crea un device type"""
-        type_slug = type_name.lower().replace(' ', '-')
-        
-        # Buscar en cache
-        if type_slug in self.cache['device_types']:
-            return self.cache['device_types'][type_slug]
-        
-        # Buscar en Netbox
-        dt = self.nb.dcim.device_types.get(slug=type_slug)
-        if dt:
-            self.cache['device_types'][type_slug] = dt
-            return dt
-        
-        # Crear si no existe
-        try:
-            logger.info(f"  → Creando device type '{type_name}' sobre la marcha...")
-            dt = self.nb.dcim.device_types.create(
-                manufacturer=self.cache['manufacturer'].id,
-                model=type_name,
-                slug=type_slug
-            )
-            self.cache['device_types'][type_slug] = dt
-            return dt
-        except Exception as e:
-            logger.error(f"  ✗ Error creando device type {type_name}: {e}")
-            # Retornar 'Unknown' como fallback
-            return self.cache['device_types'].get('unknown')
-    
-    def _get_or_create_device_role(self, role_name: str):
-        """Obtiene o crea un device role"""
-        role_slug = role_name.lower().replace(' ', '-')
-        
-        # Buscar en cache
-        if role_slug in self.cache['device_roles']:
-            return self.cache['device_roles'][role_slug]
-        
-        # Buscar en Netbox
-        role = self.nb.dcim.device_roles.get(slug=role_slug)
-        if role:
-            self.cache['device_roles'][role_slug] = role
-            return role
-        
-        # Crear si no existe
-        try:
-            logger.info(f"  → Creando device role '{role_name}' sobre la marcha...")
-            role = self.nb.dcim.device_roles.create(
-                name=role_name,
-                slug=role_slug,
-                color='9e9e9e'  # Gris por defecto
-            )
-            self.cache['device_roles'][role_slug] = role
-            return role
-        except Exception as e:
-            logger.error(f"  ✗ Error creando device role {role_name}: {e}")
-            # Retornar 'Unknown' como fallback
-            return self.cache['device_roles'].get('unknown')
-    
-    def _sync_device(self, device: Dict):
-        """Sincroniza un dispositivo individual con Netbox"""
-        
-        ip = device['ip']
-        
-        # Buscar si ya existe la IP
-        existing_ip = self.nb.ipam.ip_addresses.get(address=f"{ip}/32")
-        
-        if existing_ip:
-            # Actualizar IP existente
-            changed = self._update_ip(existing_ip, device)
-            if changed:
-                self.stats['updated'] += 1
-                logger.info(f"  ✓ Actualizado: {ip}")
+            # Verificar si ya existe
+            existing = self.nb.ipam.ip_addresses.get(address=f"{ip}/32")
+            if existing:
+                logger.debug(f"  ○ IP {ip} ya existe, actualizando...")
+                return self._update_placeholder(existing, ip, hostname, mac)
+            
+            # Obtener tag "descubierto"
+            tag = self._get_tag('descubierto')
+            if not tag:
+                logger.warning(f"  ⚠ Tag 'descubierto' no encontrado")
+                tag_ids = []
             else:
-                self.stats['unchanged'] += 1
-        else:
-            # Crear nueva IP
-            self._create_ip(device)
-            self.stats['created'] += 1
-            logger.info(f"  ✓ Creado: {ip}")
-    
-    def _create_ip(self, device: Dict):
-        """Crea una nueva IP en Netbox con toda la información"""
-        
-        ip = device['ip']
-        
-        # Preparar descripción detallada
-        description_parts = []
-        
-        if device.get('hostname'):
-            description_parts.append(f"Hostname: {device['hostname']}")
-        
-        if device.get('mac'):
-            description_parts.append(f"MAC: {device['mac']}")
-        
-        if device.get('vendor'):
-            description_parts.append(f"Vendor: {device['vendor']}")
-        
-        if device.get('os'):
-            os_str = device['os']
-            if device.get('os_accuracy'):
-                os_str += f" ({device['os_accuracy']}% confianza)"
-            description_parts.append(f"OS: {os_str}")
-        
-        if device.get('device_type'):
-            description_parts.append(f"Tipo: {device['device_type']}")
-        
-        if device.get('device_role'):
-            description_parts.append(f"Rol: {device['device_role']}")
-        
-        if device.get('ports'):
-            ports_str = ', '.join(map(str, sorted(device['ports'])[:10]))  # Primeros 10
-            if len(device['ports']) > 10:
-                ports_str += f"... (+{len(device['ports']) - 10} más)"
-            description_parts.append(f"Puertos: {ports_str}")
-        
-        if device.get('snmp_enabled'):
-            description_parts.append("SNMP: Habilitado")
-            if device.get('snmp_sysName'):
-                description_parts.append(f"SNMP Name: {device['snmp_sysName']}")
-        
-        if device.get('proxmox_vm'):
-            description_parts.append(f"Proxmox: {device.get('proxmox_type')} - {device.get('proxmox_name')}")
-        
-        description = ' | '.join(description_parts)
-        
-        # Obtener o crear tags
-        tags = []
-        if device.get('category'):
-            tag_slug = device['category'].lower()
-            if tag_slug in self.cache['tags']:
-                tags.append(self.cache['tags'][tag_slug].id)
-        
-        # Crear la IP en IPAM
-        try:
+                tag_ids = [tag.id]
+            
+            # Descripción mínima
+            description = f"Host activo detectado"
+            if mac:
+                description += f" | MAC: {mac}"
+            
+            # Crear IP placeholder
             ip_obj = self.nb.ipam.ip_addresses.create(
                 address=f"{ip}/32",
                 status='active',
-                description=description[:200] if description else '',  # Netbox tiene límite de caracteres
-                tags=tags if tags else [],
-                dns_name=device.get('hostname', '')[:255] if device.get('hostname') else '',
-                comments=self._build_comments(device)
+                description=description[:200],
+                dns_name=hostname[:255] if hostname else '',
+                tags=tag_ids,
+                comments=f"Descubierto: {datetime.now().isoformat()}\nEstado: Pendiente de escaneo completo"
             )
             
-            logger.debug(f"    IP creada con ID: {ip_obj.id}")
+            logger.debug(f"  ✓ Placeholder creado: {ip}")
+            self.stats['created'] += 1
+            return ip_obj
             
         except Exception as e:
-            logger.error(f"    Error creando IP {ip}: {e}")
-            raise
+            logger.error(f"  ✗ Error creando placeholder {ip}: {e}")
+            self.stats['errors'] += 1
+            return None
     
-    def _update_ip(self, existing_ip, device: Dict) -> bool:
-        """Actualiza una IP existente"""
-        
-        changed = False
-        
+    def _update_placeholder(self, ip_obj, ip: str, hostname: str, mac: str) -> object:
+        """Actualiza un placeholder existente"""
         try:
-            # Actualizar descripción
-            new_description = f"MAC: {device.get('mac', 'Unknown')} | Tipo: {device.get('device_type', 'Unknown')}"
-            if existing_ip.description != new_description:
-                existing_ip.description = new_description[:200]
+            changed = False
+            
+            # Actualizar hostname si es nuevo
+            if hostname and not ip_obj.dns_name:
+                ip_obj.dns_name = hostname[:255]
                 changed = True
             
-            # Actualizar hostname
-            new_dns_name = device.get('hostname', '')[:255]
-            if new_dns_name and existing_ip.dns_name != new_dns_name:
-                existing_ip.dns_name = new_dns_name
+            # Actualizar descripción con MAC si hay
+            if mac and 'MAC:' not in (ip_obj.description or ''):
+                ip_obj.description = f"Host activo | MAC: {mac}"[:200]
                 changed = True
             
-            # Actualizar comentarios
-            new_comments = self._build_comments(device)
-            if existing_ip.comments != new_comments:
-                existing_ip.comments = new_comments
-                changed = True
-            
-            # Actualizar tags
-            if device.get('category'):
-                tag_slug = device['category'].lower()
-                if tag_slug in self.cache['tags']:
-                    tag_id = self.cache['tags'][tag_slug].id
-                    current_tag_ids = [t.id for t in existing_ip.tags]
-                    if tag_id not in current_tag_ids:
-                        existing_ip.tags = current_tag_ids + [tag_id]
-                        changed = True
+            # Asegurar tag "descubierto"
+            tag = self._get_tag('descubierto')
+            if tag:
+                current_tag_ids = [t.id for t in ip_obj.tags]
+                if tag.id not in current_tag_ids:
+                    ip_obj.tags = current_tag_ids + [tag.id]
+                    changed = True
             
             if changed:
-                existing_ip.save()
+                ip_obj.save()
+                self.stats['updated'] += 1
+            else:
+                self.stats['unchanged'] += 1
+            
+            return ip_obj
             
         except Exception as e:
-            logger.error(f"    Error actualizando IP {device['ip']}: {e}")
-            raise
-        
-        return changed
+            logger.error(f"  ✗ Error actualizando placeholder {ip}: {e}")
+            return ip_obj
     
-    def _build_comments(self, device: Dict) -> str:
-        """Construye el campo de comentarios con información detallada"""
+    def update_ip_ports(self, ip: str, tcp_ports: List[int], udp_ports: List[int] = None) -> bool:
+        """
+        Actualiza una IP con los puertos detectados y cambia tag a "Puertos"
+        
+        Args:
+            ip: Dirección IP
+            tcp_ports: Lista de puertos TCP abiertos
+            udp_ports: Lista de puertos UDP abiertos (opcional)
+            
+        Returns:
+            True si se actualizó correctamente
+        """
+        try:
+            # Buscar IP
+            ip_obj = self.nb.ipam.ip_addresses.get(address=f"{ip}/32")
+            if not ip_obj:
+                logger.warning(f"  ⚠ IP {ip} no encontrada para actualizar puertos")
+                return False
+            
+            # Construir descripción con puertos
+            tcp_str = ', '.join(map(str, sorted(tcp_ports)[:20]))  # Primeros 20
+            if len(tcp_ports) > 20:
+                tcp_str += f"... (+{len(tcp_ports) - 20} más)"
+            
+            description = f"TCP: {tcp_str}"
+            
+            if udp_ports:
+                udp_str = ', '.join(map(str, sorted(udp_ports)[:10]))
+                if len(udp_ports) > 10:
+                    udp_str += f"... (+{len(udp_ports) - 10} más)"
+                description += f" | UDP: {udp_str}"
+            
+            # Actualizar
+            ip_obj.description = description[:200]
+            
+            # Cambiar tag a "puertos"
+            tag = self._get_tag('puertos')
+            if tag:
+                ip_obj.tags = [tag.id]
+            
+            # Actualizar comentarios
+            comments = ip_obj.comments or ''
+            comments += f"\n\nPuertos detectados: {datetime.now().isoformat()}"
+            comments += f"\nTCP ({len(tcp_ports)}): {', '.join(map(str, sorted(tcp_ports)))}"
+            if udp_ports:
+                comments += f"\nUDP ({len(udp_ports)}): {', '.join(map(str, sorted(udp_ports)))}"
+            ip_obj.comments = comments
+            
+            ip_obj.save()
+            logger.debug(f"  ✓ Puertos actualizados: {ip}")
+            self.stats['updated'] += 1
+            return True
+            
+        except Exception as e:
+            logger.error(f"  ✗ Error actualizando puertos de {ip}: {e}")
+            self.stats['errors'] += 1
+            return False
+    
+    def update_ip_services(self, ip: str, services: List[Dict]) -> bool:
+        """
+        Actualiza una IP con los servicios identificados y cambia tag a "Servicios"
+        
+        Args:
+            ip: Dirección IP
+            services: Lista de servicios detectados
+            
+        Returns:
+            True si se actualizó correctamente
+        """
+        try:
+            # Buscar IP
+            ip_obj = self.nb.ipam.ip_addresses.get(address=f"{ip}/32")
+            if not ip_obj:
+                logger.warning(f"  ⚠ IP {ip} no encontrada para actualizar servicios")
+                return False
+            
+            # Cambiar tag a "servicios"
+            tag = self._get_tag('servicios')
+            if tag:
+                ip_obj.tags = [tag.id]
+            
+            # Actualizar comentarios con servicios
+            comments = ip_obj.comments or ''
+            comments += f"\n\nServicios identificados: {datetime.now().isoformat()}"
+            
+            for svc in services[:15]:  # Primeros 15 servicios
+                port = svc.get('port')
+                protocol = svc.get('protocol', 'tcp')
+                service = svc.get('service', 'unknown')
+                product = svc.get('product', '')
+                version = svc.get('version', '')
+                
+                svc_line = f"\n  {port}/{protocol}: {service}"
+                if product:
+                    svc_line += f" ({product}"
+                    if version:
+                        svc_line += f" {version}"
+                    svc_line += ")"
+                
+                comments += svc_line
+            
+            if len(services) > 15:
+                comments += f"\n  ... y {len(services) - 15} servicios más"
+            
+            ip_obj.comments = comments
+            ip_obj.save()
+            
+            logger.debug(f"  ✓ Servicios actualizados: {ip}")
+            self.stats['updated'] += 1
+            return True
+            
+        except Exception as e:
+            logger.error(f"  ✗ Error actualizando servicios de {ip}: {e}")
+            self.stats['errors'] += 1
+            return False
+    
+    def update_ip_complete(self, ip: str, device_info: Dict) -> bool:
+        """
+        Actualiza una IP con toda la información completa y cambia tag a "Completado"
+        
+        Args:
+            ip: Dirección IP
+            device_info: Diccionario con toda la información del dispositivo
+            
+        Returns:
+            True si se actualizó correctamente
+        """
+        try:
+            # Buscar IP
+            ip_obj = self.nb.ipam.ip_addresses.get(address=f"{ip}/32")
+            if not ip_obj:
+                logger.warning(f"  ⚠ IP {ip} no encontrada para completar")
+                return False
+            
+            # Actualizar descripción completa
+            description_parts = []
+            
+            if device_info.get('hostname'):
+                ip_obj.dns_name = device_info['hostname'][:255]
+            
+            if device_info.get('mac'):
+                description_parts.append(f"MAC: {device_info['mac']}")
+            
+            if device_info.get('vendor'):
+                description_parts.append(f"Vendor: {device_info['vendor']}")
+            
+            if device_info.get('os'):
+                os_str = device_info['os']
+                if device_info.get('os_accuracy'):
+                    os_str += f" ({device_info['os_accuracy']}%)"
+                description_parts.append(f"OS: {os_str}")
+            
+            if device_info.get('device_type'):
+                description_parts.append(f"Tipo: {device_info['device_type']}")
+            
+            ip_obj.description = ' | '.join(description_parts)[:200]
+            
+            # Cambiar tag a "completado"
+            tag_completado = self._get_tag('completado')
+            tags = [tag_completado.id] if tag_completado else []
+            
+            # Agregar tag de categoría si existe
+            if device_info.get('category'):
+                tag_category = self._get_tag(device_info['category'].lower())
+                if tag_category:
+                    tags.append(tag_category.id)
+            
+            ip_obj.tags = tags
+            
+            # Actualizar comentarios con info completa
+            ip_obj.comments = self._build_complete_comments(device_info)
+            
+            ip_obj.save()
+            
+            logger.debug(f"  ✓ Completado: {ip}")
+            self.stats['updated'] += 1
+            return True
+            
+        except Exception as e:
+            logger.error(f"  ✗ Error completando {ip}: {e}")
+            self.stats['errors'] += 1
+            return False
+    
+    def update_ip_error(self, ip: str, error_msg: str) -> bool:
+        """
+        Marca una IP con error y cambia tag a "Error"
+        
+        Args:
+            ip: Dirección IP
+            error_msg: Mensaje de error
+            
+        Returns:
+            True si se actualizó correctamente
+        """
+        try:
+            # Buscar IP
+            ip_obj = self.nb.ipam.ip_addresses.get(address=f"{ip}/32")
+            if not ip_obj:
+                logger.warning(f"  ⚠ IP {ip} no encontrada para marcar error")
+                return False
+            
+            # Cambiar tag a "error"
+            tag = self._get_tag('error')
+            if tag:
+                ip_obj.tags = [tag.id]
+            
+            # Actualizar comentarios con error
+            comments = ip_obj.comments or ''
+            comments += f"\n\n❌ Error: {datetime.now().isoformat()}"
+            comments += f"\n{error_msg}"
+            ip_obj.comments = comments
+            
+            ip_obj.save()
+            
+            logger.debug(f"  ✗ Error marcado: {ip}")
+            self.stats['updated'] += 1
+            return True
+            
+        except Exception as e:
+            logger.error(f"  ✗ Error marcando error en {ip}: {e}")
+            self.stats['errors'] += 1
+            return False
+    
+    # ========================================================================
+    # MÉTODOS AUXILIARES
+    # ========================================================================
+    
+    def _get_tag(self, tag_slug: str) -> Optional[object]:
+        """
+        Obtiene un tag desde cache de bootstrap o Netbox
+        
+        Args:
+            tag_slug: Slug del tag
+            
+        Returns:
+            Objeto tag de Netbox o None
+        """
+        # Buscar en cache local
+        if tag_slug in self.cache['tags']:
+            return self.cache['tags'][tag_slug]
+        
+        # Buscar en cache de bootstrap
+        if self.bootstrap:
+            tag = self.bootstrap.get_cached_object('tags', tag_slug)
+            if tag:
+                self.cache['tags'][tag_slug] = tag
+                return tag
+        
+        # Buscar en Netbox
+        try:
+            tag = self.nb.extras.tags.get(slug=tag_slug)
+            if tag:
+                self.cache['tags'][tag_slug] = tag
+            return tag
+        except Exception as e:
+            logger.debug(f"Tag {tag_slug} no encontrado: {e}")
+            return None
+    
+    def _build_complete_comments(self, device: Dict) -> str:
+        """Construye el campo de comentarios con información completa"""
         lines = []
         
+        lines.append(f"=== Escaneo Completo ===")
+        lines.append(f"Fecha: {device.get('scan_time', datetime.now().isoformat())}")
         lines.append(f"IP: {device['ip']}")
+        lines.append("")
         
         if device.get('mac'):
             lines.append(f"MAC: {device['mac']}")
@@ -401,33 +429,83 @@ class NetboxSync:
             lines.append(f"Categoría: {device['category']}")
         
         if device.get('ports'):
-            ports_str = ', '.join(map(str, sorted(device['ports'])))
-            lines.append(f"Puertos abiertos: {ports_str}")
+            tcp_ports = [p for p in device['ports'] if isinstance(p, int)]
+            udp_ports = [p.replace('udp/', '') for p in device['ports'] if isinstance(p, str) and 'udp/' in p]
+            
+            if tcp_ports:
+                lines.append(f"\nPuertos TCP ({len(tcp_ports)}): {', '.join(map(str, sorted(tcp_ports)))}")
+            if udp_ports:
+                lines.append(f"Puertos UDP ({len(udp_ports)}): {', '.join(udp_ports)}")
         
         if device.get('services'):
-            lines.append(f"\nServicios detectados ({len(device['services'])}):")
-            for service in device['services'][:10]:  # Primeros 10
-                svc_line = f"  - {service['port']}/{service['protocol']}: {service['service']}"
+            lines.append(f"\n=== Servicios Detectados ({len(device['services'])}) ===")
+            for service in device['services'][:15]:
+                svc_line = f"{service['port']}/{service['protocol']}: {service['service']}"
                 if service.get('product'):
                     svc_line += f" ({service['product']}"
                     if service.get('version'):
                         svc_line += f" {service['version']}"
                     svc_line += ")"
                 lines.append(svc_line)
+            
+            if len(device['services']) > 15:
+                lines.append(f"... y {len(device['services']) - 15} servicios más")
         
         if device.get('snmp_enabled'):
-            lines.append("\nSNMP: Habilitado")
+            lines.append("\n=== SNMP ===")
+            lines.append("Estado: Habilitado")
             if device.get('snmp_sysName'):
-                lines.append(f"  sysName: {device['snmp_sysName']}")
+                lines.append(f"sysName: {device['snmp_sysName']}")
             if device.get('snmp_sysDescr'):
-                lines.append(f"  sysDescr: {device['snmp_sysDescr'][:100]}")
+                lines.append(f"sysDescr: {device['snmp_sysDescr'][:100]}")
         
         if device.get('proxmox_vm'):
-            lines.append(f"\nProxmox: {device.get('proxmox_type').upper()}")
-            lines.append(f"  Nombre: {device.get('proxmox_name')}")
-            lines.append(f"  Nodo: {device.get('proxmox_node')}")
-            lines.append(f"  Estado: {device.get('proxmox_status')}")
-        
-        lines.append(f"\nÚltimo escaneo: {device.get('scan_time', 'Unknown')}")
+            lines.append(f"\n=== Proxmox ===")
+            lines.append(f"Tipo: {device.get('proxmox_type', '').upper()}")
+            lines.append(f"Nombre: {device.get('proxmox_name')}")
+            lines.append(f"Nodo: {device.get('proxmox_node')}")
+            lines.append(f"Estado: {device.get('proxmox_status')}")
         
         return '\n'.join(lines)
+    
+    # ========================================================================
+    # MÉTODO LEGACY (para compatibilidad)
+    # ========================================================================
+    
+    def sync_devices(self, devices: List[Dict]) -> Dict:
+        """
+        Sincroniza lista de dispositivos con Netbox (método legacy)
+        NOTA: Este método crea/actualiza todo al final
+        Para sincronización incremental, usar los métodos update_ip_*
+        
+        Args:
+            devices: Lista de dispositivos descubiertos
+            
+        Returns:
+            Estadísticas de sincronización
+        """
+        logger.info(f"Sincronizando {len(devices)} dispositivos con Netbox (modo legacy)...")
+        logger.info("")
+        
+        # Reiniciar estadísticas
+        self.stats = {'created': 0, 'updated': 0, 'unchanged': 0, 'errors': 0}
+        
+        for idx, device in enumerate(devices, 1):
+            try:
+                logger.info(f"[{idx}/{len(devices)}] Sincronizando {device['ip']}...")
+                
+                # Usar método de actualización completa
+                ip_obj = self.nb.ipam.ip_addresses.get(address=f"{device['ip']}/32")
+                if ip_obj:
+                    # Ya existe, actualizar
+                    self.update_ip_complete(device['ip'], device)
+                else:
+                    # No existe, crear completo
+                    self.update_ip_complete(device['ip'], device)
+                    
+            except Exception as e:
+                logger.error(f"  ✗ Error sincronizando {device['ip']}: {e}")
+                self.stats['errors'] += 1
+        
+        logger.info("")
+        return self.stats
