@@ -20,7 +20,7 @@ from dotenv import load_dotenv
 import time
 from utils.nmap_phased_scanner import NmapPhasedScanner
 from concurrent.futures import ThreadPoolExecutor, as_completed  # ← AGREGAR ESTO
-
+from typing import List, Dict
 
 # Importar módulos propios
 from utils import (
