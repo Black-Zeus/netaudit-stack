@@ -4,12 +4,13 @@ NetAudit HomeStack - Network Scanner
 Script principal de escaneo de red
 
 Funcionalidad:
-1. Carga configuración desde variables de entorno
-2. Escanea redes configuradas con Nmap
-3. Descubre información adicional por SNMP
-4. Clasifica dispositivos inteligentemente
-5. Sincroniza resultados con Netbox
-6. Integra con Proxmox (opcional)
+1. Bootstrap de Netbox (primera ejecución)
+2. Carga configuración desde variables de entorno
+3. Escanea redes configuradas con Nmap
+4. Descubre información adicional por SNMP
+5. Clasifica dispositivos inteligentemente
+6. Sincroniza resultados con Netbox
+7. Integra con Proxmox (opcional)
 """
 
 import os
@@ -24,6 +25,7 @@ from utils import (
     SNMPDiscovery,
     DeviceClassifier,
     NetboxSync,
+    NetboxBootstrap,
     ProxmoxIntegration
 )
 
@@ -69,6 +71,7 @@ class NetAuditScanner:
         self.snmp_discovery = None
         self.classifier = None
         self.netbox_sync = None
+        self.bootstrap = None
         self.proxmox = None
         
         # Estadísticas
@@ -104,6 +107,52 @@ class NetAuditScanner:
         logger.info("")
         
         return True
+    
+    def run_bootstrap(self) -> bool:
+        """
+        Ejecuta el bootstrap de Netbox si es necesario
+        
+        Returns:
+            True si el bootstrap se ejecutó o ya estaba listo
+        """
+        logger.info("=" * 60)
+        logger.info("🔧 Verificando configuración de Netbox")
+        logger.info("=" * 60)
+        logger.info("")
+        
+        try:
+            # Crear instancia de bootstrap
+            self.bootstrap = NetboxBootstrap(
+                netbox_url=self.netbox_url,
+                netbox_token=self.netbox_token,
+                config_dir='/app/config'
+            )
+            
+            # Verificar si debe ejecutarse
+            if self.bootstrap.should_bootstrap():
+                logger.info("⚙️  Primera ejecución detectada")
+                logger.info("📦 Ejecutando bootstrap de Netbox...")
+                logger.info("")
+                
+                # Ejecutar bootstrap
+                bootstrap_stats = self.bootstrap.run()
+                
+                logger.info("")
+                logger.info("✅ Bootstrap completado exitosamente")
+                logger.info("")
+                
+            else:
+                logger.info("✓ Bootstrap ya ejecutado previamente")
+                # Cargar configuración para tener cache disponible
+                self.bootstrap.load_config()
+                logger.info("")
+            
+            return True
+            
+        except Exception as e:
+            logger.error(f"❌ Error durante bootstrap: {e}")
+            logger.warning("⚠️  Continuando sin bootstrap (puede causar errores)")
+            return False
     
     def initialize_components(self):
         """Inicializa todos los componentes necesarios"""
@@ -144,6 +193,10 @@ class NetAuditScanner:
             sys.exit(1)
         
         logger.info("  ✓ Netbox Sync inicializado y conectado")
+        
+        # Pasar referencia de bootstrap a netbox_sync para usar cache
+        if self.bootstrap:
+            self.netbox_sync.bootstrap = self.bootstrap
         
         # Proxmox Integration (opcional)
         if self.proxmox_enabled and self.proxmox_host:
@@ -333,26 +386,34 @@ class NetAuditScanner:
             if not self.validate_config():
                 sys.exit(1)
             
-            # 2. Inicializar componentes
+            # ========================================
+            # 🆕 2. BOOTSTRAP DE NETBOX (NUEVO)
+            # ========================================
+            if not self.run_bootstrap():
+                logger.warning("⚠️  Bootstrap falló pero continuando...")
+            
+            # ========================================
+            
+            # 3. Inicializar componentes
             self.initialize_components()
             
-            # 3. Escanear redes
+            # 4. Escanear redes
             devices = self.scan_networks()
             
             if not devices:
                 logger.warning("⚠ No se encontraron dispositivos")
                 return
             
-            # 4. Enriquecer con SNMP y clasificación
+            # 5. Enriquecer con SNMP y clasificación
             devices = self.enrich_devices(devices)
             
-            # 5. Integrar con Proxmox (opcional)
+            # 6. Integrar con Proxmox (opcional)
             devices = self.integrate_proxmox(devices)
             
-            # 6. Sincronizar con Netbox
+            # 7. Sincronizar con Netbox
             self.sync_to_netbox(devices)
             
-            # 7. Calcular duración y mostrar resumen
+            # 8. Calcular duración y mostrar resumen
             end_time = datetime.now()
             self.stats['scan_duration'] = (end_time - start_time).total_seconds()
             self.print_summary()
