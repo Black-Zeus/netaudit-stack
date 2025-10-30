@@ -5,7 +5,7 @@
 # automáticamente en Netbox en la primera ejecución
 # ============================================================
 
-version: "1.0"
+version: "1.1"
 bootstrap_once: true  # Solo ejecutar si no existen objetos
 
 # ============================================================
@@ -164,36 +164,93 @@ tags:
     color: "ff5722"
     description: "Infraestructura de red"
   
-  # Tags de estado de escaneo (CRÍTICOS para flujo incremental)
+  # ============================================================
+  # TAGS DE ESCANEO POR FASES - Sistema de 5 fases
+  # ============================================================
+  # Estos tags permiten rastrear el progreso del escaneo incremental
+  
+  # FASE 0: Estado inicial
+  - name: "🔍 Pendiente Escaneo"
+    slug: "pendiente-escaneo"
+    color: "9e9e9e"
+    description: "IP registrada pero sin escanear"
+  
+  # FASE 1: Descubrimiento de IP
+  - name: "✅ Fase 1: IP Viva"
+    slug: "fase-1-ip-viva"
+    color: "4caf50"
+    description: "Host detectado como activo (ping/ARP)"
+  
+  # FASE 2: Detección de puertos TCP
+  - name: "🔌 Fase 2: Puertos TCP"
+    slug: "fase-2-puertos-tcp"
+    color: "03a9f4"
+    description: "Puertos TCP detectados"
+  
+  # FASE 3: Detección de puertos UDP
+  - name: "🔌 Fase 3: Puertos UDP"
+    slug: "fase-3-puertos-udp"
+    color: "00bcd4"
+    description: "Puertos UDP detectados"
+  
+  # FASE 4: Identificación de servicios
+  - name: "⚙️ Fase 4: Servicios"
+    slug: "fase-4-servicios"
+    color: "9c27b0"
+    description: "Servicios identificados en puertos"
+  
+  # FASE 5: Auditoría completa
+  - name: "🎯 Fase 5: Completado"
+    slug: "fase-5-completado"
+    color: "4caf50"
+    description: "Escaneo completo (OS, MAC, hostname, fingerprinting)"
+  
+  # Estados especiales
+  - name: "⚠️ Error Escaneo"
+    slug: "error-escaneo"
+    color: "f44336"
+    description: "Error durante alguna fase del escaneo"
+  
+  - name: "⏸️ Escaneo Pausado"
+    slug: "escaneo-pausado"
+    color: "ff9800"
+    description: "Escaneo pausado manualmente"
+  
+  - name: "🔄 Re-escaneando"
+    slug: "re-escaneando"
+    color: "ffc107"
+    description: "Re-escaneo en progreso"
+  
+  # Tags legacy (mantener compatibilidad con código existente)
   - name: "Descubierto"
     slug: "descubierto"
     color: "ffc107"
-    description: "Host detectado, pendiente de escaneo"
+    description: "[LEGACY] Host detectado - usar fase-1-ip-viva"
     
   - name: "Escaneando"
     slug: "escaneando"
     color: "03a9f4"
-    description: "Escaneo en progreso"
+    description: "[LEGACY] Escaneo en progreso - usar tags de fases"
     
   - name: "Puertos"
     slug: "puertos"
     color: "9c27b0"
-    description: "Puertos detectados, identificando servicios"
+    description: "[LEGACY] Puertos detectados - usar fase-2 o fase-3"
     
   - name: "Servicios"
     slug: "servicios"
     color: "00bcd4"
-    description: "Servicios identificados, completando escaneo"
+    description: "[LEGACY] Servicios identificados - usar fase-4-servicios"
     
   - name: "Completado"
     slug: "completado"
     color: "4caf50"
-    description: "Escaneo completado exitosamente"
+    description: "[LEGACY] Escaneo completo - usar fase-5-completado"
     
   - name: "Error"
     slug: "error"
     color: "f44336"
-    description: "Error durante el escaneo"
+    description: "[LEGACY] Error durante escaneo - usar error-escaneo"
 
 # ============================================================
 # IP RANGES (Rangos de IP y su propósito)
@@ -225,3 +282,41 @@ ip_ranges:
     start: "192.168.100.0"
     end: "192.168.100.254"
     description: "Red del ISP"
+
+# ============================================================
+# CONFIGURACIÓN DEL ESCANEO POR FASES
+# ============================================================
+# Esta sección documenta la configuración del escaneo
+# Las variables reales se leen desde .env
+
+scan_phases:
+  phase_1_discovery:
+    name: "Descubrimiento de IPs"
+    techniques:
+      - "ICMP Echo (ping)"
+      - "TCP SYN a puertos 80,443"
+      - "TCP ACK a puertos 80,443"
+    nmap_args: "-sn -PS80,443 -PA80,443"
+    
+  phase_2_tcp_ports:
+    name: "Detección de Puertos TCP"
+    description: "Escaneo SYN completo de todos los puertos TCP"
+    nmap_args: "-p- --open -sS --min-rate 5000 -n -Pn"
+    output_format: "grepable"
+    
+  phase_3_udp_ports:
+    name: "Detección de Puertos UDP"
+    description: "Escaneo de puertos UDP comunes"
+    nmap_args: "-sU --top-ports 100 -n -Pn"
+    
+  phase_4_services:
+    name: "Identificación de Servicios"
+    description: "Version detection en puertos abiertos"
+    nmap_args: "-sV -Pn"
+    dynamic_ports: true  # Usa puertos de fase 2
+    
+  phase_5_complete:
+    name: "Auditoría Completa"
+    description: "OS detection, fingerprinting completo"
+    nmap_args: "-A -O -sS -sU -sV -Pn"
+    requires_sudo: true

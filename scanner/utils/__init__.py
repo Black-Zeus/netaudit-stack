@@ -14,6 +14,7 @@ __all__ = [
     'setup_logger',
     'get_logger',
     'NetworkScanner',
+    'NmapPhasedScanner',  # ← AÑADIR ESTO
     'SNMPDiscovery',
     'DeviceClassifier',
     'NetboxSync',
