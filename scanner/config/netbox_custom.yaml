@@ -1,0 +1,147 @@
+# ============================================================
+# NetAudit - Netbox Custom Configuration
+# ============================================================
+# Este archivo es para personalizaciones del USUARIO
+# No se sobrescribe en actualizaciones del sistema
+# ============================================================
+# INSTRUCCIONES:
+# - Descomenta y modifica las secciones que necesites
+# - Los objetos se identifican por 'slug' (debe ser único)
+# - Si un slug ya existe en netbox_bootstrap.yaml, lo sobrescribe
+# - Los nuevos slugs se añaden
+# ============================================================
+
+# ============================================================
+# SITES PERSONALIZADOS
+# ============================================================
+# Descomenta para agregar sites adicionales
+sites:
+  - name: "Oficina"
+    slug: "oficina"
+    description: "Oficina remota"
+    status: "active"
+  
+  - name: "Casa Familiar"
+    slug: "casa-familiar"
+    description: "Red en casa de mis padres"
+    status: "active"
+
+# ============================================================
+# MANUFACTURERS REALES
+# ============================================================
+# Agrega los fabricantes de tu equipamiento real
+manufacturers:
+  - name: "Huawei"
+    slug: "huawei"
+    description: "Huawei Technologies Co., Ltd."
+    
+  # Descomenta los que uses:
+  - name: "Synology"
+    slug: "synology"
+    description: "Synology Inc."
+    
+  - name: "Ubiquiti"
+    slug: "ubiquiti"
+    description: "Ubiquiti Networks, Inc."
+    
+  - name: "TP-Link"
+    slug: "tp-link"
+    description: "TP-Link Technologies Co., Ltd."
+    
+  - name: "Cisco"
+    slug: "cisco"
+    description: "Cisco Systems, Inc."
+    
+  - name: "MikroTik"
+    slug: "mikrotik"
+    description: "MikroTik"
+    
+  - name: "Xiaomi"
+    slug: "xiaomi"
+    description: "Xiaomi Corporation"
+    
+  - name: "Samsung"
+    slug: "samsung"
+    description: "Samsung Electronics"
+
+# ============================================================
+# DEVICE TYPES ESPECÍFICOS
+# ============================================================
+# Agrega los modelos exactos de tus dispositivos
+device_types:
+  - model: "AX3 Pro"
+    slug: "ax3-pro"
+    manufacturer_slug: "huawei"
+    
+  # Ejemplos adicionales (descomenta y modifica):
+  # - model: "DS920+"
+  #   slug: "ds920-plus"
+  #   manufacturer_slug: "synology"
+  #   
+  # - model: "UniFi AP AC Pro"
+  #   slug: "unifi-ap-ac-pro"
+  #   manufacturer_slug: "ubiquiti"
+  #   
+  # - model: "Archer C6"
+  #   slug: "archer-c6"
+  #   manufacturer_slug: "tp-link"
+
+# ============================================================
+# DEVICE ROLES PERSONALIZADOS
+# ============================================================
+# Agrega roles específicos para tu organización
+device_roles:
+  - name: "Backup"
+    slug: "backup"
+    color: "607d8b"
+    description: "Sistemas de backup y recuperación"
+  
+  - name: "Monitoreo"
+    slug: "monitoreo"
+    color: "009688"
+    description: "Sistemas de monitoreo y alertas"
+  
+  - name: "Desarrollo"
+    slug: "desarrollo"
+    color: "ff5722"
+    description: "Entorno de desarrollo y testing"
+
+# ============================================================
+# TAGS PERSONALIZADOS
+# ============================================================
+# Agrega tags específicos para tu red
+tags:
+  - name: "Producción"
+    slug: "produccion"
+    color: "4caf50"
+    description: "Sistemas en producción"
+  
+  - name: "Testing"
+    slug: "testing"
+    color: "ff9800"
+    description: "Entorno de pruebas"
+  
+  - name: "Crítico"
+    slug: "critico"
+    color: "f44336"
+    description: "Dispositivos críticos para la operación"
+  
+  - name: "Fuera de Servicio"
+    slug: "fuera-servicio"
+    color: "9e9e9e"
+    description: "Dispositivos fuera de servicio"
+
+  - name: "VPN"
+    slug: "vpn"
+    color: "673ab7"
+    description: "Dispositivos con acceso VPN"
+
+# ============================================================
+# NOTAS
+# ============================================================
+# - Este archivo NO se sobrescribe en actualizaciones
+# - Puedes agregar tantos objetos como necesites
+# - Usa slugs descriptivos (sin espacios, solo guiones)
+# - Los colores son en formato hexadecimal sin el #
+# - Para manufacturer_slug, debe existir en manufacturers
+# ============================================================
