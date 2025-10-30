@@ -245,7 +245,7 @@ class NmapPhasedScanner:
     # ========================================================================
     # FASE 2: DETECCIÓN DE PUERTOS TCP
     # ========================================================================
-    
+
     def phase2_scan_tcp_ports(self, ip: str) -> List[int]:
         """
         FASE 2: Escanea TODOS los puertos TCP (1-65535) de forma rápida
@@ -278,7 +278,15 @@ class NmapPhasedScanner:
         ]
         
         start_time = time.time()
-        stdout, stderr, returncode = self._run_nmap_command(args, timeout=600)
+        
+        # Calcular timeout dinámico basado en min_rate
+        # Fórmula: (65535 puertos / min_rate) + margen de 60s
+        estimated_time = (65535 / self.min_rate) + 60
+        timeout = min(int(estimated_time), 600)  # Máximo 10 minutos
+        
+        logger.debug(f"    Timeout calculado: {timeout}s (basado en min_rate={self.min_rate})")
+        
+        stdout, stderr, returncode = self._run_nmap_command(args, timeout=timeout)
         duration = time.time() - start_time
         
         if returncode != 0:
@@ -298,7 +306,7 @@ class NmapPhasedScanner:
             logger.info(f"    ○ No se encontraron puertos TCP abiertos")
         
         return ports
-    
+
     def _parse_grepable_ports(self, gnmap_file: Path) -> List[int]:
         """
         Parsea archivo grepable de nmap para extraer puertos
@@ -315,52 +323,70 @@ class NmapPhasedScanner:
             with open(gnmap_file, 'r') as f:
                 content = f.read()
             
-            # Buscar todos los patrones puerto/open
-            matches = re.findall(r'(\d+)/open', content)
+            # Buscar todos los patrones puerto/open/tcp
+            # Asegurar que solo capturamos puertos TCP
+            matches = re.findall(r'(\d+)/open/tcp', content)
             ports = [int(p) for p in matches]
             ports.sort()
             
+        except FileNotFoundError:
+            logger.error(f"Archivo no encontrado: {gnmap_file}")
         except Exception as e:
             logger.error(f"Error parseando {gnmap_file}: {e}")
         
         return ports
     
     # ========================================================================
-    # FASE 3: DETECCIÓN DE PUERTOS UDP
+    # FASE 3: DETECCIÓN DE PUERTOS UDP (1000 PUERTOS)
     # ========================================================================
-    
-    def phase3_scan_udp_ports(self, ip: str, top_ports: int = 1000) -> List[int]:
 
+    def phase3_scan_udp_ports(self, ip: str, top_ports: int = 1000) -> List[int]:
         """
-        FASE 3: Escanea puertos UDP más comunes
+        FASE 3: Escanea los 1000 puertos UDP más comunes (ajustable)
         
         Comando equivalente:
-        sudo nmap -sU --top-ports 100 -n -Pn 192.168.3.X
+        sudo nmap -sU --top-ports 1000 -n -Pn 192.168.3.X
+        
+        NOTA: Escanear UDP es MUY lento. Con 1000 puertos puede tomar
+        5-10 minutos por host dependiendo del timing.
         
         Args:
             ip: Dirección IP a escanear
-            top_ports: Número de puertos UDP más comunes a escanear
+            top_ports: Número de puertos UDP más comunes a escanear (default: 1000)
             
         Returns:
             Lista de puertos UDP abiertos
         """
-        logger.info(f"  🔌 FASE 3: Escaneando puertos UDP de {ip}")
+        logger.info(f"  🔌 FASE 3: Escaneando top {top_ports} puertos UDP de {ip}")
         
         output_file = self.temp_dir / f'udp_ports_{ip.replace(".", "_")}.gnmap'
         
         args = [
             '-sU',  # UDP scan
             f'--top-ports={top_ports}',  # Top N puertos más comunes
-            '--open',
-            '-n',
-            '-Pn',
+            '--open',  # Solo puertos abiertos
+            '-n',  # No DNS resolution
+            '-Pn',  # No ping
             f'-{self.timing}',
             '-oG', str(output_file),
             ip
         ]
         
         start_time = time.time()
-        stdout, stderr, returncode = self._run_nmap_command(args, timeout=600)
+        
+        # UDP es MUCHO más lento - ajustar timeout según cantidad de puertos
+        # Estimación: ~1-2 segundos por puerto con T2
+        if self.timing == 'T2':
+            timeout = min(top_ports * 2 + 60, 1800)  # Máximo 30 minutos
+        elif self.timing == 'T3':
+            timeout = min(top_ports * 1.5 + 60, 1200)  # Máximo 20 minutos
+        else:  # T4 o superior
+            timeout = min(top_ports + 60, 900)  # Máximo 15 minutos
+        
+        logger.debug(f"    Timeout calculado: {timeout}s para {top_ports} puertos UDP")
+        logger.info(f"    ⏳ Esto puede tomar varios minutos...")
+        
+        stdout, stderr, returncode = self._run_nmap_command(args, timeout=int(timeout))
         duration = time.time() - start_time
         
         if returncode != 0:
@@ -369,24 +395,49 @@ class NmapPhasedScanner:
             return []
         
         # Parsear puertos UDP
-        ports = self._parse_grepable_ports(output_file)
+        ports = self._parse_grepable_udp_ports(output_file)
         
         if ports:
-            logger.info(f"    ✅ {len(ports)} puertos UDP abiertos ({duration:.1f}s)")
-            logger.info(f"       Puertos: {self._format_port_list(ports)}")
+            logger.info(f"    ✅ {len(ports)} puertos UDP abiertos ({duration:.1f}s / {duration/60:.1f}m)")
+            logger.info(f"       Puertos: {self._format_port_list(ports, max_show=15)}")
             self.stats['phase3_hosts_with_udp'] += 1
             self.stats['total_udp_ports'] += len(ports)
         else:
             logger.info(f"    ○ No se encontraron puertos UDP abiertos")
         
         return ports
+
+    def _parse_grepable_udp_ports(self, gnmap_file: Path) -> List[int]:
+        """
+        Parsea archivo grepable de nmap para extraer puertos UDP
+        
+        Busca líneas como:
+        Ports: 53/open/udp//domain///, 161/open/udp//snmp///
+        """
+        ports = []
+        
+        try:
+            with open(gnmap_file, 'r') as f:
+                content = f.read()
+            
+            # Buscar patrones puerto/open/udp
+            matches = re.findall(r'(\d+)/open/udp', content)
+            ports = [int(p) for p in matches]
+            ports.sort()
+            
+        except FileNotFoundError:
+            logger.error(f"Archivo no encontrado: {gnmap_file}")
+        except Exception as e:
+            logger.error(f"Error parseando {gnmap_file}: {e}")
+        
+        return ports
     
     # ========================================================================
     # FASE 4: IDENTIFICACIÓN DE SERVICIOS
     # ========================================================================
-    
+
     def phase4_identify_services(self, ip: str, tcp_ports: List[int], 
-                                  udp_ports: List[int]) -> Dict:
+                                udp_ports: List[int]) -> Dict:
         """
         FASE 4: Identifica servicios en puertos abiertos
         
@@ -408,8 +459,14 @@ class NmapPhasedScanner:
             'udp': {}
         }
         
+        # Validar si hay puertos para escanear
+        if not tcp_ports and not udp_ports:
+            logger.info(f"    ⊘ Sin puertos abiertos, saltando identificación de servicios")
+            return services
+        
         # Escanear servicios TCP
         if tcp_ports:
+            logger.debug(f"    Identificando {len(tcp_ports)} servicios TCP...")
             tcp_services = self._identify_services_on_ports(
                 ip, tcp_ports, protocol='tcp'
             )
@@ -417,6 +474,7 @@ class NmapPhasedScanner:
         
         # Escanear servicios UDP
         if udp_ports:
+            logger.debug(f"    Identificando {len(udp_ports)} servicios UDP...")
             udp_services = self._identify_services_on_ports(
                 ip, udp_ports, protocol='udp'
             )
@@ -433,9 +491,9 @@ class NmapPhasedScanner:
             logger.info(f"    ○ No se pudieron identificar servicios")
         
         return services
-    
+
     def _identify_services_on_ports(self, ip: str, ports: List[int], 
-                                     protocol: str = 'tcp') -> Dict:
+                                    protocol: str = 'tcp') -> Dict:
         """
         Identifica servicios en puertos específicos
         
@@ -458,7 +516,7 @@ class NmapPhasedScanner:
         args = [
             '-sV',  # Version detection
             '-p', port_list,
-            '-Pn',
+            '-Pn',  # No ping
             f'-{self.timing}',
         ]
         
@@ -468,15 +526,19 @@ class NmapPhasedScanner:
         
         args.extend(['-oX', str(output_file), ip])
         
-        stdout, stderr, returncode = self._run_nmap_command(args, timeout=300)
+        # Timeout basado en cantidad de puertos
+        # Version detection es lento: ~5s por puerto
+        timeout = min(len(ports) * 5 + 60, 900)  # Máximo 15 minutos
+        
+        stdout, stderr, returncode = self._run_nmap_command(args, timeout=timeout)
         
         if returncode != 0:
-            logger.warning(f"    ⚠️ Service scan {protocol.upper()} falló")
+            logger.warning(f"    ⚠️ Service scan {protocol.upper()} falló: {stderr}")
             return {}
         
         # Parsear XML
         return self._parse_service_xml(output_file)
-    
+
     def _parse_service_xml(self, xml_file: Path) -> Dict:
         """
         Parsea archivo XML de nmap para extraer información de servicios
@@ -513,12 +575,29 @@ class NmapPhasedScanner:
                         'method': service_elem.get('method', ''),
                         'conf': service_elem.get('conf', '')
                     }
+                else:
+                    # Puerto abierto pero sin info de servicio
+                    services[int(port_id)] = {
+                        'port': int(port_id),
+                        'protocol': protocol,
+                        'service': 'unknown',
+                        'product': '',
+                        'version': '',
+                        'extrainfo': '',
+                        'ostype': '',
+                        'method': 'unknown',
+                        'conf': '0'
+                    }
         
-        except Exception as e:
+        except FileNotFoundError:
+            logger.error(f"Archivo XML no encontrado: {xml_file}")
+        except ET.ParseError as e:
             logger.error(f"Error parseando XML {xml_file}: {e}")
+        except Exception as e:
+            logger.error(f"Error inesperado parseando XML {xml_file}: {e}")
         
         return services
-    
+
     def _log_services_summary(self, services: Dict):
         """Muestra resumen de servicios detectados"""
         
@@ -543,11 +622,14 @@ class NmapPhasedScanner:
                 product = svc.get('product', '')
                 info = product if product else svc.get('service', 'unknown')
                 logger.info(f"         {port}: {info}")
-    
+            
+            if len(udp_services) > 3:
+                logger.info(f"         ... y {len(udp_services) - 3} servicios más")
+                
     # ========================================================================
     # FASE 5: AUDITORÍA COMPLETA
     # ========================================================================
-    
+
     def phase5_full_audit(self, ip: str) -> Dict:
         """
         FASE 5: Auditoría completa con detección de OS, MAC, hostname
@@ -569,7 +651,7 @@ class NmapPhasedScanner:
             '-A',  # Aggressive scan (OS, version, script, traceroute)
             '-O',  # OS detection
             '-sS',  # TCP SYN
-            '-sU',  # UDP (top ports)
+            '-sU',  # UDP scan
             '--top-ports=20',  # Solo top 20 UDP para no demorar mucho
             '-sV',  # Version detection
             '-Pn',  # No ping
@@ -579,26 +661,32 @@ class NmapPhasedScanner:
         ]
         
         start_time = time.time()
-        stdout, stderr, returncode = self._run_nmap_command(args, timeout=600)
+        
+        # Auditoría completa puede tomar tiempo
+        timeout = 900  # 15 minutos máximo
+        
+        logger.info(f"    ⏳ Ejecutando auditoría completa (puede tomar varios minutos)...")
+        
+        stdout, stderr, returncode = self._run_nmap_command(args, timeout=timeout)
         duration = time.time() - start_time
         
         if returncode != 0:
             logger.warning(f"    ⚠️ Auditoría completa falló: {stderr}")
-            self.stats['errors'] += 1
-            return {}
+            logger.info(f"    Intentando recuperar datos parciales del XML...")
+            # Continuar e intentar parsear lo que se haya generado
         
         # Parsear XML completo
         audit_data = self._parse_full_audit_xml(output_file)
         
-        if audit_data:
-            logger.info(f"    ✅ Auditoría completada ({duration:.1f}s)")
+        if audit_data and any(audit_data.values()):
+            logger.info(f"    ✅ Auditoría completada ({duration:.1f}s / {duration/60:.1f}m)")
             self._log_audit_summary(audit_data)
             self.stats['phase5_hosts_complete'] += 1
         else:
-            logger.info(f"    ○ Auditoría parcial (datos limitados)")
+            logger.info(f"    ⚠️ Auditoría parcial - datos limitados disponibles")
         
         return audit_data
-    
+
     def _parse_full_audit_xml(self, xml_file: Path) -> Dict:
         """
         Parsea XML de auditoría completa
@@ -625,6 +713,7 @@ class NmapPhasedScanner:
             
             host = root.find('host')
             if host is None:
+                logger.debug("No se encontró elemento 'host' en el XML")
                 return data
             
             # Hostname
@@ -648,8 +737,8 @@ class NmapPhasedScanner:
                     data['os'] = osmatch.get('name', '')
                     data['os_accuracy'] = int(osmatch.get('accuracy', 0))
                 
-                # Múltiples matches
-                for match in os_elem.findall('osmatch')[:3]:  # Top 3
+                # Múltiples matches (top 3)
+                for match in os_elem.findall('osmatch')[:3]:
                     data['os_details'].append({
                         'name': match.get('name', ''),
                         'accuracy': int(match.get('accuracy', 0))
@@ -658,16 +747,40 @@ class NmapPhasedScanner:
             # Uptime
             uptime_elem = host.find('uptime')
             if uptime_elem is not None:
-                seconds = uptime_elem.get('seconds', '0')
-                data['uptime'] = self._format_uptime(int(seconds))
+                seconds = int(uptime_elem.get('seconds', '0'))
+                data['uptime'] = self._format_uptime(seconds)
             
-        except Exception as e:
+            # TCP Sequence (para fingerprinting avanzado)
+            tcpsequence_elem = host.find('tcpsequence')
+            if tcpsequence_elem is not None:
+                data['tcp_sequence'] = {
+                    'index': tcpsequence_elem.get('index', ''),
+                    'difficulty': tcpsequence_elem.get('difficulty', ''),
+                    'values': tcpsequence_elem.get('values', '')
+                }
+            
+            # IP ID Sequence
+            ipidsequence_elem = host.find('ipidsequence')
+            if ipidsequence_elem is not None:
+                data['ip_id_sequence'] = {
+                    'class': ipidsequence_elem.get('class', ''),
+                    'values': ipidsequence_elem.get('values', '')
+                }
+        
+        except FileNotFoundError:
+            logger.error(f"Archivo XML no encontrado: {xml_file}")
+        except ET.ParseError as e:
             logger.error(f"Error parseando audit XML {xml_file}: {e}")
+        except Exception as e:
+            logger.error(f"Error inesperado en parse_full_audit_xml: {e}")
         
         return data
-    
+
     def _format_uptime(self, seconds: int) -> str:
         """Formatea uptime en formato legible"""
+        if seconds == 0:
+            return 'Unknown'
+        
         days = seconds // 86400
         hours = (seconds % 86400) // 3600
         minutes = (seconds % 3600) // 60
@@ -681,7 +794,7 @@ class NmapPhasedScanner:
             parts.append(f"{minutes}m")
         
         return ' '.join(parts) if parts else '< 1m'
-    
+
     def _log_audit_summary(self, data: Dict):
         """Muestra resumen de auditoría completa"""
         if data.get('hostname'):
@@ -694,10 +807,17 @@ class NmapPhasedScanner:
         
         if data.get('os'):
             logger.info(f"       OS: {data['os']} ({data['os_accuracy']}% confianza)")
+            
+            # Mostrar alternativas si la confianza es baja
+            if data['os_accuracy'] < 90 and data.get('os_details'):
+                logger.info(f"       Alternativas:")
+                for alt in data['os_details'][:2]:
+                    if alt['name'] != data['os']:
+                        logger.info(f"         - {alt['name']} ({alt['accuracy']}%)")
         
         if data.get('uptime'):
             logger.info(f"       Uptime: {data['uptime']}")
-    
+            
     # ========================================================================
     # UTILIDADES
     # ========================================================================
