@@ -1,5 +1,3 @@
-
-
 services:
   # ======================
   # NETBOX - Core Inventory
@@ -125,9 +123,15 @@ services:
       dockerfile: Dockerfile
     image: netaudit-scanner:latest
     container_name: netaudit-scanner
-    # REMOVIDO: network_mode: host
+    # CRÍTICO: Usar network_mode: host para acceder a la red física
+    # Esto permite al scanner ver y escanear dispositivos en 192.168.3.0/24
+    network_mode: host
     env_file:
       - .env
+    environment:
+      # Sobreescribir NETBOX_URL para usar IP del host
+      # (el scanner con host network no puede resolver nombres de contenedores)
+      - NETBOX_URL=http://192.168.3.251:8100
     volumes:
       - ./scanner/config:/app/config:ro
       - scanner-logs:/app/logs
@@ -135,18 +139,17 @@ services:
       netbox:
         condition: service_healthy
     restart: unless-stopped
-    # Privilegios de red para nmap
+    # Privilegios de red para nmap (OS detection y raw packets)
     cap_add:
       - NET_ADMIN
       - NET_RAW
-    # Usar la red de Docker
-    networks:
-      - netaudit
+    # Labels para Ofelia (job scheduler)
     labels:
       ofelia.enabled: "true"
-      ofelia.job-exec.scan-network.schedule: "0 0 0 * * *"
+      ofelia.job-exec.scan-network.schedule: "0 0 0 * * *"  # Diario a medianoche
       ofelia.job-exec.scan-network.command: "python /app/scan.py"
       ofelia.job-exec.scan-network.user: "root"
+      ofelia.job-exec.scan-network.no-overlap: "true"  # Evita ejecuciones simultáneas
 
   # ======================
   # OFELIA - Cron Scheduler
@@ -179,6 +182,26 @@ services:
     networks:
       - netaudit
 
+  # ======================
+  # OXIDIZED - Config Backup
+  # ======================
+  oxidized:
+    image: oxidized/oxidized:latest
+    container_name: netaudit-oxidized
+    volumes:
+      - ./oxidized:/root/.config/oxidized
+      - oxidized-data:/root/.config/oxidized/configs.git
+    ports:
+      - "8888:8888"
+    restart: unless-stopped
+    networks:
+      - netaudit
+    environment:
+      - CONFIG_RELOAD_INTERVAL=3600
+
+# ======================
+# NETWORKS
+# ======================
 networks:
   netaudit:
     driver: bridge
@@ -186,6 +209,9 @@ networks:
       config:
         - subnet: 172.24.0.0/16
 
+# ======================
+# VOLUMES
+# ======================
 volumes:
   postgres-data:
     driver: local
@@ -198,4 +224,6 @@ volumes:
   netbox-scripts:
     driver: local
   scanner-logs:
+    driver: local
+  oxidized-data:
     driver: local

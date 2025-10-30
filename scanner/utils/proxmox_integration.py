@@ -5,6 +5,8 @@ Módulo de integración con Proxmox
 import logging
 from proxmoxer import ProxmoxAPI
 from typing import List, Dict
+import urllib3
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 logger = logging.getLogger(__name__)
 
@@ -26,10 +28,14 @@ class ProxmoxIntegration:
                 host,
                 user=user,
                 password=password,
-                verify_ssl=verify_ssl
+                verify_ssl=verify_ssl,
+                port=8006,      # Puerto explícito
+                timeout=10      # Timeout de 10 segundos
             )
+            # Verificar que la conexión funciona
+            self.proxmox.version.get()
             self.connected = True
-            logger.info(f"Conectado a Proxmox en {host}")
+            logger.info(f"Conectado a Proxmox en {host}:8006")
         except Exception as e:
             logger.error(f"No se pudo conectar a Proxmox: {e}")
             self.connected = False

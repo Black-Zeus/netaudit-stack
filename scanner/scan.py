@@ -1,286 +1,377 @@
+#!/usr/bin/env python3
 """
-Módulo de escaneo de red usando Nmap
-Incluye progreso en tiempo real y callbacks
+NetAudit HomeStack - Network Scanner
+Script principal de escaneo de red
+
+Funcionalidad:
+1. Carga configuración desde variables de entorno
+2. Escanea redes configuradas con Nmap
+3. Descubre información adicional por SNMP
+4. Clasifica dispositivos inteligentemente
+5. Sincroniza resultados con Netbox
+6. Integra con Proxmox (opcional)
 """
 
-import nmap
-import logging
-from typing import List, Dict, Optional
-import time
+import os
+import sys
+from datetime import datetime
+from dotenv import load_dotenv
 
-logger = logging.getLogger('netaudit')
+# Importar módulos propios
+from utils import (
+    setup_logger,
+    NetworkScanner,
+    SNMPDiscovery,
+    DeviceClassifier,
+    NetboxSync,
+    ProxmoxIntegration
+)
+
+# Cargar variables de entorno
+load_dotenv()
+
+# Configurar logging
+logger = setup_logger('netaudit')
 
 
-class NetworkScanner:
-    """Escáner de red usando Nmap con soporte de progreso"""
+class NetAuditScanner:
+    """Orquestador principal del escaneo de red"""
     
-    def __init__(self, timing='T2', enable_os_detection=True, 
-                 enable_service_version=True, max_ports=1000):
-        """
-        Inicializa el escáner
+    def __init__(self):
+        """Inicializa el scanner con configuración desde env"""
         
-        Args:
-            timing: Timing template de nmap (T0-T5)
-            enable_os_detection: Activar detección de OS
-            enable_service_version: Activar detección de versiones de servicio
-            max_ports: Número máximo de puertos a escanear
-        """
-        self.nm = nmap.PortScanner()
-        self.timing = timing
-        self.enable_os_detection = enable_os_detection
-        self.enable_service_version = enable_service_version
-        self.max_ports = max_ports
+        # Configuración de Netbox
+        self.netbox_url = os.getenv('NETBOX_URL', 'http://netbox:8080')
+        self.netbox_token = os.getenv('NETBOX_TOKEN', '')
         
-        # Estadísticas de progreso
-        self.progress = {
-            'current_host': '',
-            'hosts_total': 0,
-            'hosts_scanned': 0,
-            'hosts_up': 0,
-            'start_time': 0
+        # Redes a escanear
+        networks_str = os.getenv('SCAN_NETWORKS', '192.168.3.0/24')
+        self.networks = [n.strip() for n in networks_str.split(',')]
+        
+        # Configuración de escaneo
+        self.nmap_timing = os.getenv('NMAP_TIMING', 'T2')
+        self.max_ports = int(os.getenv('MAX_PORTS', '1000'))
+        self.enable_os_detection = os.getenv('ENABLE_OS_DETECTION', 'true').lower() == 'true'
+        self.enable_service_version = os.getenv('ENABLE_SERVICE_VERSION', 'true').lower() == 'true'
+        
+        # Configuración de SNMP
+        self.snmp_enabled = os.getenv('ENABLE_SNMP', 'true').lower() == 'true'
+        self.snmp_community = os.getenv('SNMP_COMMUNITY', 'public')
+        
+        # Configuración de Proxmox (opcional)
+        self.proxmox_enabled = os.getenv('ENABLE_PROXMOX', 'false').lower() == 'true'
+        self.proxmox_host = os.getenv('PROXMOX_HOST', '')
+        self.proxmox_user = os.getenv('PROXMOX_USER', '')
+        self.proxmox_password = os.getenv('PROXMOX_PASSWORD', '')
+        
+        # Inicializar componentes
+        self.nmap_scanner = None
+        self.snmp_discovery = None
+        self.classifier = None
+        self.netbox_sync = None
+        self.proxmox = None
+        
+        # Estadísticas
+        self.stats = {
+            'networks_scanned': 0,
+            'devices_found': 0,
+            'devices_with_snmp': 0,
+            'proxmox_vms': 0,
+            'scan_duration': 0
         }
     
-    def _progress_callback(self, host, result):
-        """Callback para mostrar progreso del escaneo"""
-        self.progress['hosts_scanned'] += 1
-        self.progress['current_host'] = host
+    def validate_config(self) -> bool:
+        """Valida la configuración antes de iniciar"""
         
-        scanned = self.progress['hosts_scanned']
-        total = self.progress['hosts_total']
-        percentage = (scanned / total * 100) if total > 0 else 0
+        logger.info("=" * 60)
+        logger.info("NetAudit HomeStack - Network Scanner")
+        logger.info("=" * 60)
+        logger.info("")
         
-        # Calcular tiempo estimado
-        elapsed = time.time() - self.progress['start_time']
-        if scanned > 0:
-            avg_time = elapsed / scanned
-            remaining = (total - scanned) * avg_time
-            eta_mins = int(remaining / 60)
-            eta_secs = int(remaining % 60)
-            
-            logger.info(
-                f"  ⏳ Progreso: {scanned}/{total} hosts ({percentage:.1f}%) "
-                f"| Activos: {self.progress['hosts_up']} "
-                f"| ETA: {eta_mins}m {eta_secs}s"
-            )
-        else:
-            logger.info(f"  ⏳ Escaneando host {scanned}/{total} ({percentage:.1f}%)")
+        # Validar Netbox
+        if not self.netbox_token:
+            logger.error("❌ NETBOX_TOKEN no está configurado")
+            return False
+        
+        logger.info(f"✓ Netbox URL: {self.netbox_url}")
+        logger.info(f"✓ Redes a escanear: {', '.join(self.networks)}")
+        logger.info(f"✓ Timing: {self.nmap_timing}")
+        logger.info(f"✓ Max ports: {self.max_ports}")
+        logger.info(f"✓ OS Detection: {'Sí' if self.enable_os_detection else 'No'}")
+        logger.info(f"✓ Service Version: {'Sí' if self.enable_service_version else 'No'}")
+        logger.info(f"✓ SNMP: {'Sí' if self.snmp_enabled else 'No'}")
+        logger.info(f"✓ Proxmox: {'Sí' if self.proxmox_enabled else 'No'}")
+        logger.info("")
+        
+        return True
     
-    def scan_network(self, network: str) -> List[Dict]:
-        """
-        Escanea una red completa
+    def initialize_components(self):
+        """Inicializa todos los componentes necesarios"""
         
-        Args:
-            network: Red en formato CIDR (ej: 192.168.1.0/24)
+        logger.info("📦 Inicializando componentes...")
+        
+        # Nmap Scanner
+        self.nmap_scanner = NetworkScanner(
+            timing=self.nmap_timing,
+            enable_os_detection=self.enable_os_detection,
+            enable_service_version=self.enable_service_version,
+            max_ports=self.max_ports
+        )
+        logger.info("  ✓ Nmap Scanner inicializado")
+        
+        # SNMP Discovery
+        if self.snmp_enabled:
+            self.snmp_discovery = SNMPDiscovery(
+                community=self.snmp_community,
+                timeout=2,
+                retries=1
+            )
+            logger.info("  ✓ SNMP Discovery inicializado")
+        
+        # Device Classifier
+        self.classifier = DeviceClassifier()
+        logger.info("  ✓ Device Classifier inicializado")
+        
+        # Netbox Sync
+        self.netbox_sync = NetboxSync(
+            url=self.netbox_url,
+            token=self.netbox_token
+        )
+        
+        # Verificar conexión con Netbox
+        if not self.netbox_sync.test_connection():
+            logger.error("❌ No se pudo conectar con Netbox")
+            sys.exit(1)
+        
+        logger.info("  ✓ Netbox Sync inicializado y conectado")
+        
+        # Proxmox Integration (opcional)
+        if self.proxmox_enabled and self.proxmox_host:
+            try:
+                self.proxmox = ProxmoxIntegration(
+                    host=self.proxmox_host,
+                    user=self.proxmox_user,
+                    password=self.proxmox_password
+                )
+                if self.proxmox.connected:
+                    logger.info("  ✓ Proxmox Integration inicializada")
+            except Exception as e:
+                logger.warning(f"  ⚠ Proxmox no disponible: {e}")
+                self.proxmox = None
+        
+        logger.info("")
+    
+    def scan_networks(self) -> list:
+        """Escanea todas las redes configuradas"""
+        
+        all_devices = []
+        
+        for network in self.networks:
+            logger.info("=" * 60)
+            logger.info(f"🌐 Escaneando red: {network}")
+            logger.info("=" * 60)
+            logger.info("")
             
-        Returns:
-            Lista de dispositivos encontrados
-        """
-        logger.info(f"Iniciando escaneo de {network}")
-        logger.info(f"Configuración: Timing={self.timing}, Max Ports={self.max_ports}")
+            try:
+                # Escaneo con Nmap
+                devices = self.nmap_scanner.scan_network(network)
+                
+                logger.info(f"✓ Escaneo completado: {len(devices)} dispositivos encontrados")
+                logger.info("")
+                
+                all_devices.extend(devices)
+                self.stats['networks_scanned'] += 1
+                self.stats['devices_found'] += len(devices)
+                
+            except Exception as e:
+                logger.error(f"❌ Error escaneando {network}: {e}")
+                continue
         
-        devices = []
+        return all_devices
+    
+    def enrich_devices(self, devices: list) -> list:
+        """Enriquece información de dispositivos con SNMP y clasificación"""
+        
+        logger.info("=" * 60)
+        logger.info("🔍 Enriqueciendo información de dispositivos")
+        logger.info("=" * 60)
+        logger.info("")
+        
+        enriched_devices = []
+        
+        for idx, device in enumerate(devices, 1):
+            logger.info(f"[{idx}/{len(devices)}] Procesando {device['ip']}...")
+            logger.info(f"  Hostname: {device.get('hostname', 'N/A')}")
+            logger.info(f"  MAC: {device.get('mac', 'N/A')}")
+            logger.info(f"  Vendor: {device.get('vendor', 'N/A')}")
+            
+            try:
+                # Agregar timestamp
+                device['scan_time'] = datetime.now().isoformat()
+                
+                # Descubrimiento SNMP
+                if self.snmp_enabled and self.snmp_discovery:
+                    logger.info(f"  Probando SNMP...")
+                    snmp_info = self.snmp_discovery.query_device(device['ip'])
+                    if snmp_info:
+                        device.update(snmp_info)
+                        self.stats['devices_with_snmp'] += 1
+                        logger.info(f"  ✓ SNMP activo - {snmp_info.get('snmp_sysName', 'Sin nombre')}")
+                    else:
+                        logger.info(f"  ○ SNMP no disponible")
+                
+                # Clasificación inteligente
+                logger.info(f"  Clasificando dispositivo...")
+                classification = self.classifier.classify(device)
+                device.update(classification)
+                
+                logger.info(f"  ✓ Clasificado como: {classification['device_type']} "
+                          f"({classification['confidence']}% confianza)")
+                logger.info(f"  ✓ Rol: {classification['device_role']}")
+                logger.info(f"  ✓ Categoría: {classification['category']}")
+                
+                enriched_devices.append(device)
+                
+            except Exception as e:
+                logger.warning(f"  ⚠ Error procesando {device['ip']}: {e}")
+                enriched_devices.append(device)  # Agregar de todas formas
+            
+            logger.info("")
+        
+        return enriched_devices
+    
+    def integrate_proxmox(self, devices: list) -> list:
+        """Integra información de Proxmox si está disponible"""
+        
+        if not self.proxmox or not self.proxmox.connected:
+            return devices
+        
+        logger.info("=" * 60)
+        logger.info("🖥️  Integrando información de Proxmox")
+        logger.info("=" * 60)
+        logger.info("")
         
         try:
-            # Primero: ping scan rápido para descubrir hosts
-            logger.info("  🔍 Paso 1/2: Descubrimiento rápido de hosts (ping scan)...")
-            self.progress['start_time'] = time.time()
+            # Obtener VMs y LXCs de Proxmox
+            proxmox_devices = self.proxmox.get_all_devices()
+            self.stats['proxmox_vms'] = len(proxmox_devices)
             
-            # Calcular número aproximado de hosts
-            import ipaddress
-            net = ipaddress.ip_network(network, strict=False)
-            self.progress['hosts_total'] = net.num_addresses - 2  # Sin network/broadcast
+            logger.info(f"✓ Encontradas {len(proxmox_devices)} VMs/LXCs en Proxmox")
             
-            logger.info(f"  📊 Escaneando hasta {self.progress['hosts_total']} direcciones IP...")
+            # Crear índice por IP
+            proxmox_by_ip = {d['ip']: d for d in proxmox_devices if 'ip' in d}
             
-            # Ping scan (-sn: no port scan)
-            ping_args = f'-sn -{self.timing}'
-            
-            self.nm.scan(hosts=network, arguments=ping_args)
-            
-            hosts_up = []
-            for host in self.nm.all_hosts():
-                if self.nm[host].state() == 'up':
-                    hosts_up.append(host)
-                    self.progress['hosts_up'] += 1
-            
-            logger.info(f"  ✓ Encontrados {len(hosts_up)} hosts activos")
-            
-            if not hosts_up:
-                logger.warning("  ⚠ No se encontraron hosts activos en la red")
-                return devices
-            
-            # Segundo: escaneo detallado de hosts activos
-            logger.info(f"  🔍 Paso 2/2: Escaneo detallado de {len(hosts_up)} hosts activos...")
-            logger.info(f"  ⏱  Esto puede tomar varios minutos...")
-            
-            # Resetear progreso para segunda fase
-            self.progress['hosts_total'] = len(hosts_up)
-            self.progress['hosts_scanned'] = 0
-            self.progress['start_time'] = time.time()
-            
-            # Construir argumentos de escaneo
-            scan_args = self._build_scan_args()
-            
-            # Escanear cada host activo
-            for idx, host in enumerate(hosts_up, 1):
-                try:
-                    logger.info(f"  [{idx}/{len(hosts_up)}] Escaneando {host}...")
+            # Enriquecer dispositivos escaneados con info de Proxmox
+            for device in devices:
+                if device['ip'] in proxmox_by_ip:
+                    px_info = proxmox_by_ip[device['ip']]
+                    device['proxmox_vm'] = True
+                    device['proxmox_type'] = px_info['type']
+                    device['proxmox_name'] = px_info['name']
+                    device['proxmox_node'] = px_info['node']
+                    device['proxmox_status'] = px_info['status']
                     
-                    # Escanear host individual
-                    self.nm.scan(hosts=host, arguments=scan_args)
-                    
-                    if host in self.nm.all_hosts():
-                        device_info = self._parse_host(host)
-                        if device_info:
-                            devices.append(device_info)
-                            logger.info(f"    ✓ {host} - {device_info.get('hostname', 'Sin nombre')}")
-                    
-                    # Actualizar progreso
-                    self.progress['hosts_scanned'] = idx
-                    
-                except Exception as e:
-                    logger.warning(f"    ⚠ Error escaneando {host}: {e}")
-                    continue
+                    logger.info(f"  ✓ {device['ip']} es {px_info['type']}: {px_info['name']}")
             
-            elapsed = time.time() - self.progress['start_time']
-            logger.info(f"  ⏱  Tiempo total de escaneo: {elapsed:.1f} segundos")
+            logger.info("")
             
         except Exception as e:
-            logger.error(f"Error durante el escaneo: {e}")
-            raise
+            logger.error(f"❌ Error integrando Proxmox: {e}")
         
         return devices
     
-    def _build_scan_args(self) -> str:
-        """Construye los argumentos de escaneo de nmap"""
-        args = [f'-{self.timing}']
+    def sync_to_netbox(self, devices: list):
+        """Sincroniza dispositivos con Netbox"""
         
-        # Top ports (más rápido que escaneo completo)
-        args.append(f'--top-ports {self.max_ports}')
-        
-        # Detección de versión de servicios
-        if self.enable_service_version:
-            args.append('-sV')
-        
-        # Detección de OS (requiere root)
-        if self.enable_os_detection:
-            args.append('-O')
-            args.append('--osscan-guess')
-        
-        # Extras útiles
-        args.append('--host-timeout 5m')  # Timeout por host
-        args.append('-Pn')  # Skip ping (ya sabemos que está up)
-        
-        return ' '.join(args)
-    
-    def _parse_host(self, host: str) -> Optional[Dict]:
-        """
-        Parsea la información de un host escaneado
-        
-        Args:
-            host: IP del host
-            
-        Returns:
-            Diccionario con información del dispositivo
-        """
-        try:
-            host_info = self.nm[host]
-            
-            device = {
-                'ip': host,
-                'state': host_info.state(),
-                'hostname': '',
-                'mac': '',
-                'vendor': '',
-                'os': '',
-                'os_accuracy': 0,
-                'ports': [],
-                'services': []
-            }
-            
-            # Hostname
-            if 'hostnames' in host_info:
-                hostnames = host_info['hostnames']
-                if hostnames and len(hostnames) > 0:
-                    device['hostname'] = hostnames[0].get('name', '')
-            
-            # MAC Address y Vendor
-            if 'addresses' in host_info:
-                if 'mac' in host_info['addresses']:
-                    device['mac'] = host_info['addresses']['mac']
-                
-            if 'vendor' in host_info:
-                vendors = host_info['vendor']
-                if vendors:
-                    # El vendor viene como {mac: vendor_name}
-                    device['vendor'] = list(vendors.values())[0] if vendors.values() else ''
-            
-            # OS Detection
-            if 'osmatch' in host_info:
-                os_matches = host_info['osmatch']
-                if os_matches and len(os_matches) > 0:
-                    best_match = os_matches[0]
-                    device['os'] = best_match.get('name', '')
-                    device['os_accuracy'] = int(best_match.get('accuracy', 0))
-            
-            # Puertos y servicios abiertos
-            if 'tcp' in host_info:
-                for port, port_info in host_info['tcp'].items():
-                    if port_info['state'] == 'open':
-                        device['ports'].append(port)
-                        
-                        service = {
-                            'port': port,
-                            'protocol': 'tcp',
-                            'service': port_info.get('name', ''),
-                            'product': port_info.get('product', ''),
-                            'version': port_info.get('version', ''),
-                            'extrainfo': port_info.get('extrainfo', '')
-                        }
-                        device['services'].append(service)
-            
-            if 'udp' in host_info:
-                for port, port_info in host_info['udp'].items():
-                    if port_info['state'] == 'open':
-                        device['ports'].append(f"udp/{port}")
-                        
-                        service = {
-                            'port': port,
-                            'protocol': 'udp',
-                            'service': port_info.get('name', ''),
-                            'product': port_info.get('product', ''),
-                            'version': port_info.get('version', '')
-                        }
-                        device['services'].append(service)
-            
-            return device
-            
-        except Exception as e:
-            logger.error(f"Error parseando host {host}: {e}")
-            return None
-    
-    def scan_single_host(self, ip: str) -> Optional[Dict]:
-        """
-        Escanea un solo host
-        
-        Args:
-            ip: Dirección IP del host
-            
-        Returns:
-            Información del dispositivo o None
-        """
-        logger.info(f"Escaneando host individual: {ip}")
+        logger.info("=" * 60)
+        logger.info("📊 Sincronizando con Netbox")
+        logger.info("=" * 60)
+        logger.info("")
         
         try:
-            args = self._build_scan_args()
-            self.nm.scan(hosts=ip, arguments=args)
+            sync_stats = self.netbox_sync.sync_devices(devices)
             
-            if ip in self.nm.all_hosts():
-                return self._parse_host(ip)
-            else:
-                logger.warning(f"Host {ip} no responde")
-                return None
-                
+            logger.info("")
+            logger.info("Resultados de sincronización:")
+            logger.info(f"  ✓ Creados: {sync_stats['created']}")
+            logger.info(f"  ✓ Actualizados: {sync_stats['updated']}")
+            logger.info(f"  ✓ Sin cambios: {sync_stats['unchanged']}")
+            if sync_stats['errors'] > 0:
+                logger.warning(f"  ⚠ Errores: {sync_stats['errors']}")
+            
         except Exception as e:
-            logger.error(f"Error escaneando {ip}: {e}")
-            return None
+            logger.error(f"❌ Error sincronizando con Netbox: {e}")
+            raise
+    
+    def print_summary(self):
+        """Imprime resumen final del escaneo"""
+        
+        logger.info("")
+        logger.info("=" * 60)
+        logger.info("📈 RESUMEN DEL ESCANEO")
+        logger.info("=" * 60)
+        logger.info("")
+        logger.info(f"Redes escaneadas:      {self.stats['networks_scanned']}")
+        logger.info(f"Dispositivos encontrados: {self.stats['devices_found']}")
+        logger.info(f"Con SNMP activo:       {self.stats['devices_with_snmp']}")
+        if self.proxmox:
+            logger.info(f"VMs/LXCs Proxmox:      {self.stats['proxmox_vms']}")
+        logger.info(f"Duración:              {self.stats['scan_duration']:.1f} segundos")
+        logger.info("")
+        logger.info("✅ Escaneo completado exitosamente")
+        logger.info("")
+        logger.info(f"🌐 Ver resultados en: {self.netbox_url}")
+        logger.info("=" * 60)
+    
+    def run(self):
+        """Ejecuta el escaneo completo"""
+        
+        start_time = datetime.now()
+        
+        try:
+            # 1. Validar configuración
+            if not self.validate_config():
+                sys.exit(1)
+            
+            # 2. Inicializar componentes
+            self.initialize_components()
+            
+            # 3. Escanear redes
+            devices = self.scan_networks()
+            
+            if not devices:
+                logger.warning("⚠ No se encontraron dispositivos")
+                return
+            
+            # 4. Enriquecer con SNMP y clasificación
+            devices = self.enrich_devices(devices)
+            
+            # 5. Integrar con Proxmox (opcional)
+            devices = self.integrate_proxmox(devices)
+            
+            # 6. Sincronizar con Netbox
+            self.sync_to_netbox(devices)
+            
+            # 7. Calcular duración y mostrar resumen
+            end_time = datetime.now()
+            self.stats['scan_duration'] = (end_time - start_time).total_seconds()
+            self.print_summary()
+            
+        except KeyboardInterrupt:
+            logger.warning("\n⚠ Escaneo interrumpido por el usuario")
+            sys.exit(1)
+        except Exception as e:
+            logger.error(f"\n❌ Error fatal durante el escaneo: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            sys.exit(1)
+
+
+def main():
+    """Punto de entrada principal"""
+    scanner = NetAuditScanner()
+    scanner.run()
+
+
+if __name__ == '__main__':
+    main()

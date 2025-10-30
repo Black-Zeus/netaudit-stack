@@ -1,6 +1,6 @@
 """
-Módulo de escaneo de red usando Nmap
-Incluye progreso en tiempo real y callbacks
+Módulo de escaneo de red usando Nmap - VERSIÓN VERBOSE
+Incluye progreso en tiempo real y logs detallados
 """
 
 import nmap
@@ -40,31 +40,6 @@ class NetworkScanner:
             'start_time': 0
         }
     
-    def _progress_callback(self, host, result):
-        """Callback para mostrar progreso del escaneo"""
-        self.progress['hosts_scanned'] += 1
-        self.progress['current_host'] = host
-        
-        scanned = self.progress['hosts_scanned']
-        total = self.progress['hosts_total']
-        percentage = (scanned / total * 100) if total > 0 else 0
-        
-        # Calcular tiempo estimado
-        elapsed = time.time() - self.progress['start_time']
-        if scanned > 0:
-            avg_time = elapsed / scanned
-            remaining = (total - scanned) * avg_time
-            eta_mins = int(remaining / 60)
-            eta_secs = int(remaining % 60)
-            
-            logger.info(
-                f"  ⏳ Progreso: {scanned}/{total} hosts ({percentage:.1f}%) "
-                f"| Activos: {self.progress['hosts_up']} "
-                f"| ETA: {eta_mins}m {eta_secs}s"
-            )
-        else:
-            logger.info(f"  ⏳ Escaneando host {scanned}/{total} ({percentage:.1f}%)")
-    
     def scan_network(self, network: str) -> List[Dict]:
         """
         Escanea una red completa
@@ -81,7 +56,9 @@ class NetworkScanner:
         devices = []
         
         try:
-            # Primero: ping scan rápido para descubrir hosts
+            # ==========================================
+            # FASE 1: PING SCAN (Descubrimiento rápido)
+            # ==========================================
             logger.info("  🔍 Paso 1/2: Descubrimiento rápido de hosts (ping scan)...")
             self.progress['start_time'] = time.time()
             
@@ -103,15 +80,29 @@ class NetworkScanner:
                     hosts_up.append(host)
                     self.progress['hosts_up'] += 1
             
+            # ✨ NUEVO: Mostrar lista de hosts encontrados
             logger.info(f"  ✓ Encontrados {len(hosts_up)} hosts activos")
+            logger.info("")
+            logger.info("  📋 Hosts activos detectados:")
+            for idx, host in enumerate(hosts_up, 1):
+                hostname = ""
+                if 'hostnames' in self.nm[host]:
+                    hostnames = self.nm[host]['hostnames']
+                    if hostnames and len(hostnames) > 0:
+                        hostname = f" ({hostnames[0].get('name', '')})"
+                logger.info(f"     {idx:2d}. {host}{hostname}")
+            logger.info("")
             
             if not hosts_up:
                 logger.warning("  ⚠ No se encontraron hosts activos en la red")
                 return devices
             
-            # Segundo: escaneo detallado de hosts activos
+            # ==========================================
+            # FASE 2: ESCANEO DETALLADO
+            # ==========================================
             logger.info(f"  🔍 Paso 2/2: Escaneo detallado de {len(hosts_up)} hosts activos...")
             logger.info(f"  ⏱  Esto puede tomar varios minutos...")
+            logger.info("")
             
             # Resetear progreso para segunda fase
             self.progress['hosts_total'] = len(hosts_up)
@@ -124,26 +115,65 @@ class NetworkScanner:
             # Escanear cada host activo
             for idx, host in enumerate(hosts_up, 1):
                 try:
-                    logger.info(f"  [{idx}/{len(hosts_up)}] Escaneando {host}...")
+                    # Calcular tiempo estimado
+                    elapsed = time.time() - self.progress['start_time']
+                    if idx > 1:
+                        avg_time = elapsed / (idx - 1)
+                        remaining = (len(hosts_up) - idx + 1) * avg_time
+                        eta_mins = int(remaining / 60)
+                        eta_secs = int(remaining % 60)
+                        eta_str = f" | ETA: {eta_mins}m {eta_secs}s"
+                    else:
+                        eta_str = ""
+                    
+                    logger.info(f"  [{idx}/{len(hosts_up)}] Escaneando {host}...{eta_str}")
                     
                     # Escanear host individual
+                    scan_start = time.time()
                     self.nm.scan(hosts=host, arguments=scan_args)
+                    scan_duration = time.time() - scan_start
                     
                     if host in self.nm.all_hosts():
                         device_info = self._parse_host(host)
                         if device_info:
                             devices.append(device_info)
-                            logger.info(f"    ✓ {host} - {device_info.get('hostname', 'Sin nombre')}")
+                            
+                            # ✨ NUEVO: Mostrar info resumida del host
+                            hostname = device_info.get('hostname', 'Sin nombre')
+                            ports_count = len(device_info.get('ports', []))
+                            os_info = device_info.get('os', 'Desconocido')
+                            
+                            logger.info(f"    ✓ {host} - {hostname}")
+                            logger.info(f"       OS: {os_info}")
+                            logger.info(f"       Puertos abiertos: {ports_count}")
+                            
+                            if device_info.get('services'):
+                                # Mostrar primeros 3 servicios
+                                services = device_info['services'][:3]
+                                logger.info(f"       Servicios destacados:")
+                                for svc in services:
+                                    svc_name = svc.get('service', 'unknown')
+                                    svc_port = svc.get('port')
+                                    svc_product = svc.get('product', '')
+                                    if svc_product:
+                                        logger.info(f"         - {svc_port}/{svc_name}: {svc_product}")
+                                    else:
+                                        logger.info(f"         - {svc_port}/{svc_name}")
+                            
+                            logger.info(f"       Tiempo: {scan_duration:.1f}s")
+                            logger.info("")
                     
                     # Actualizar progreso
                     self.progress['hosts_scanned'] = idx
                     
                 except Exception as e:
                     logger.warning(f"    ⚠ Error escaneando {host}: {e}")
+                    logger.info("")
                     continue
             
             elapsed = time.time() - self.progress['start_time']
-            logger.info(f"  ⏱  Tiempo total de escaneo: {elapsed:.1f} segundos")
+            logger.info(f"  ⏱  Tiempo total de escaneo detallado: {elapsed:.1f} segundos ({elapsed/60:.1f} minutos)")
+            logger.info("")
             
         except Exception as e:
             logger.error(f"Error durante el escaneo: {e}")
