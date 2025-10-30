@@ -1,0 +1,12 @@
+--------------------------------------------------
+2025-10-30 01:54:26 UTC
+source returns no usable nodes [Oxidized::Core::NoNodesFound]
+--------------------------------------------------
+/var/lib/gems/3.2.0/gems/oxidized-0.34.3/lib/oxidized/core.rb:17:in `initialize'
+/var/lib/gems/3.2.0/gems/oxidized-0.34.3/lib/oxidized/core.rb:4:in `new'
+/var/lib/gems/3.2.0/gems/oxidized-0.34.3/lib/oxidized/core.rb:4:in `new'
+/var/lib/gems/3.2.0/gems/oxidized-0.34.3/lib/oxidized/cli.rb:17:in `run'
+/var/lib/gems/3.2.0/gems/oxidized-0.34.3/bin/oxidized:5:in `<top (required)>'
+/usr/local/bin/oxidized:25:in `load'
+/usr/local/bin/oxidized:25:in `<main>'
+--------------------------------------------------

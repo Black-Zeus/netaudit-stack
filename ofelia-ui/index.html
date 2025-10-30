@@ -1,0 +1,291 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>NetAudit - Job Scheduler</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+        }
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+        .header {
+            background: white;
+            padding: 30px;
+            border-radius: 12px;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+            margin-bottom: 30px;
+        }
+        .header h1 {
+            color: #333;
+            font-size: 32px;
+            margin-bottom: 10px;
+        }
+        .header p {
+            color: #666;
+            font-size: 16px;
+        }
+        .card {
+            background: white;
+            padding: 30px;
+            border-radius: 12px;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+            margin-bottom: 20px;
+        }
+        .job-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 20px;
+        }
+        .job-title {
+            font-size: 24px;
+            color: #333;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        .status {
+            display: inline-block;
+            padding: 6px 12px;
+            border-radius: 20px;
+            font-size: 12px;
+            font-weight: 600;
+            text-transform: uppercase;
+        }
+        .status.active {
+            background: #10b981;
+            color: white;
+        }
+        .job-info {
+            background: #f9fafb;
+            padding: 20px;
+            border-radius: 8px;
+            margin: 20px 0;
+        }
+        .job-info-item {
+            display: flex;
+            margin-bottom: 12px;
+            align-items: center;
+        }
+        .job-info-item:last-child {
+            margin-bottom: 0;
+        }
+        .job-info-label {
+            font-weight: 600;
+            color: #374151;
+            min-width: 140px;
+        }
+        .job-info-value {
+            color: #6b7280;
+            font-family: 'Courier New', monospace;
+            background: white;
+            padding: 4px 8px;
+            border-radius: 4px;
+        }
+        .button-group {
+            display: flex;
+            gap: 10px;
+            flex-wrap: wrap;
+        }
+        .button {
+            background: #667eea;
+            color: white;
+            padding: 12px 24px;
+            border: none;
+            border-radius: 8px;
+            cursor: pointer;
+            font-size: 14px;
+            font-weight: 600;
+            transition: all 0.3s;
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+        }
+        .button:hover {
+            background: #5568d3;
+            transform: translateY(-2px);
+            box-shadow: 0 4px 12px rgba(102, 126, 234, 0.4);
+        }
+        .button.secondary {
+            background: #6b7280;
+        }
+        .button.secondary:hover {
+            background: #4b5563;
+        }
+        .button.success {
+            background: #10b981;
+        }
+        .button.success:hover {
+            background: #059669;
+        }
+        .services-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+            gap: 20px;
+        }
+        .service-card {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 20px;
+            border-radius: 8px;
+            text-decoration: none;
+            transition: transform 0.3s, box-shadow 0.3s;
+        }
+        .service-card:hover {
+            transform: translateY(-4px);
+            box-shadow: 0 8px 16px rgba(0,0,0,0.2);
+        }
+        .service-card h3 {
+            font-size: 20px;
+            margin-bottom: 10px;
+        }
+        .service-card p {
+            font-size: 14px;
+            opacity: 0.9;
+        }
+        .command-box {
+            background: #1f2937;
+            color: #10b981;
+            padding: 15px;
+            border-radius: 8px;
+            font-family: 'Courier New', monospace;
+            font-size: 14px;
+            margin-top: 10px;
+            overflow-x: auto;
+        }
+        .icon { font-size: 24px; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>🚀 NetAudit HomeStack</h1>
+            <p>Sistema de Auditoría y Gestión de Red Automatizada</p>
+        </div>
+
+        <div class="card">
+            <div class="job-header">
+                <div class="job-title">
+                    <span class="icon">🔍</span>
+                    <span>Network Scanner</span>
+                </div>
+                <span class="status active">Activo</span>
+            </div>
+
+            <div class="job-info">
+                <div class="job-info-item">
+                    <span class="job-info-label">📋 Comando:</span>
+                    <span class="job-info-value">python /app/scan.py</span>
+                </div>
+                <div class="job-info-item">
+                    <span class="job-info-label">⏰ Schedule:</span>
+                    <span class="job-info-value">Diario a las 00:00 (medianoche)</span>
+                </div>
+                <div class="job-info-item">
+                    <span class="job-info-label">🔧 Expresión Cron:</span>
+                    <span class="job-info-value">0 0 0 * * *</span>
+                </div>
+                <div class="job-info-item">
+                    <span class="job-info-label">🌐 Redes:</span>
+                    <span class="job-info-value">192.168.3.0/24, 192.168.100.0/24</span>
+                </div>
+            </div>
+
+            <h3 style="margin: 20px 0 10px 0; color: #374151;">Acciones Manuales</h3>
+            <div class="button-group">
+                <button class="button success" onclick="showRunCommand()">
+                    ▶️ Ejecutar Escaneo Ahora
+                </button>
+                <button class="button" onclick="showLogsCommand()">
+                    📄 Ver Logs en Tiempo Real
+                </button>
+                <button class="button secondary" onclick="showStatsCommand()">
+                    📊 Ver Estadísticas
+                </button>
+            </div>
+        </div>
+
+        <div class="card">
+            <h2 style="margin-bottom: 20px; color: #333;">🌐 Servicios del Stack</h2>
+            <div class="services-grid">
+                <a href="http://192.168.3.251:8100" target="_blank" class="service-card">
+                    <h3>📊 Netbox</h3>
+                    <p>Sistema de inventario y gestión de red (IPAM/DCIM)</p>
+                </a>
+                <a href="http://192.168.3.251:8888" target="_blank" class="service-card">
+                    <h3>💾 Oxidized</h3>
+                    <p>Backup automático de configuraciones de routers</p>
+                </a>
+                <a href="http://192.168.3.251:8180" class="service-card" style="background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);">
+                    <h3>⏰ Ofelia</h3>
+                    <p>Gestor de tareas programadas (estás aquí)</p>
+                </a>
+            </div>
+        </div>
+
+        <div class="card">
+            <h2 style="margin-bottom: 20px; color: #333;">📘 Comandos Útiles</h2>
+            <p style="color: #666; margin-bottom: 15px;">Ejecuta estos comandos desde SSH en tu servidor:</p>
+            
+            <div style="margin-bottom: 20px;">
+                <h3 style="color: #374151; font-size: 16px; margin-bottom: 8px;">▶️ Ejecutar escaneo manualmente:</h3>
+                <div class="command-box">docker exec -it netaudit-scanner python /app/scan.py</div>
+            </div>
+
+            <div style="margin-bottom: 20px;">
+                <h3 style="color: #374151; font-size: 16px; margin-bottom: 8px;">📄 Ver logs en tiempo real:</h3>
+                <div class="command-box">docker logs -f netaudit-scanner</div>
+            </div>
+
+            <div style="margin-bottom: 20px;">
+                <h3 style="color: #374151; font-size: 16px; margin-bottom: 8px;">📊 Ver estado de todos los servicios:</h3>
+                <div class="command-box">docker-compose ps</div>
+            </div>
+
+            <div>
+                <h3 style="color: #374151; font-size: 16px; margin-bottom: 8px;">🔄 Reiniciar el scanner:</h3>
+                <div class="command-box">docker-compose restart scanner</div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        function showRunCommand() {
+            alert('Para ejecutar el escaneo manualmente:\n\n' +
+                  '1. Conecta por SSH a tu servidor:\n' +
+                  '   ssh root@192.168.3.251\n\n' +
+                  '2. Ejecuta el comando:\n' +
+                  '   docker exec -it netaudit-scanner python /app/scan.py\n\n' +
+                  '3. Espera 5-15 minutos dependiendo del tamaño de tu red\n\n' +
+                  'O espera hasta medianoche para la ejecución automática.');
+        }
+        
+        function showLogsCommand() {
+            alert('Para ver los logs en tiempo real:\n\n' +
+                  '1. Conecta por SSH:\n' +
+                  '   ssh root@192.168.3.251\n\n' +
+                  '2. Ejecuta:\n' +
+                  '   docker logs -f netaudit-scanner\n\n' +
+                  '3. Presiona Ctrl+C para salir');
+        }
+
+        function showStatsCommand() {
+            alert('Para ver estadísticas del último escaneo:\n\n' +
+                  '1. Conecta por SSH:\n' +
+                  '   ssh root@192.168.3.251\n\n' +
+                  '2. Ver logs completos:\n' +
+                  '   docker logs netaudit-scanner | tail -50\n\n' +
+                  '3. O ve a Netbox para ver dispositivos:\n' +
+                  '   http://192.168.3.251:8100');
+        }
+    </script>
+</body>
+</html>

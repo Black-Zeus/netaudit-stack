@@ -1,0 +1,44 @@
+# =========================
+# Core / NetBox API client
+# =========================
+pynetbox==7.3.3
+
+# =========================
+# Network scanning
+# =========================
+python-nmap==0.7.1
+mac-vendor-lookup==0.1.12
+
+# =========================
+# SNMP & ASN.1
+# =========================
+pysnmp==4.4.12
+pysnmp-mibs==0.1.6
+pyasn1==0.5.1
+pyasn1-modules==0.3.0
+
+# =========================
+# HTTP / utilidades web
+# =========================
+requests==2.31.0
+python-dotenv==1.0.0
+pyyaml==6.0.1
+
+# =========================
+# Logging / colores / validación
+# =========================
+colorlog==6.8.2
+colorama==0.4.6
+validators==0.22.0
+
+# =========================
+# Fechas / IP address utils
+# =========================
+python-dateutil==2.8.2
+ipaddress==1.0.23
+netaddr==1.2.1
+
+# =========================
+# APIs opcionales
+# =========================
+proxmoxer==2.0.1

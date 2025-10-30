@@ -1,0 +1,201 @@
+
+
+services:
+  # ======================
+  # NETBOX - Core Inventory
+  # ======================
+  netbox:
+    image: netboxcommunity/netbox:v4.1
+    container_name: netaudit-netbox
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
+      redis-cache:
+        condition: service_started
+    env_file:
+      - .env
+    volumes:
+      - ./netbox/configuration:/etc/netbox/config:ro
+      - netbox-media:/opt/netbox/netbox/media
+      - netbox-reports:/opt/netbox/netbox/reports
+      - netbox-scripts:/opt/netbox/netbox/scripts
+    ports:
+      - "8100:8080"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    networks:
+      - netaudit
+
+  netbox-worker:
+    image: netboxcommunity/netbox:v4.1
+    container_name: netaudit-netbox-worker
+    depends_on:
+      netbox:
+        condition: service_healthy
+    env_file:
+      - .env
+    volumes:
+      - ./netbox/configuration:/etc/netbox/config:ro
+      - netbox-media:/opt/netbox/netbox/media
+      - netbox-reports:/opt/netbox/netbox/reports
+      - netbox-scripts:/opt/netbox/netbox/scripts
+    command: /opt/netbox/venv/bin/python /opt/netbox/netbox/manage.py rqworker
+    restart: unless-stopped
+    networks:
+      - netaudit
+
+  netbox-housekeeping:
+    image: netboxcommunity/netbox:v4.1
+    container_name: netaudit-netbox-housekeeping
+    depends_on:
+      netbox:
+        condition: service_healthy
+    env_file:
+      - .env
+    volumes:
+      - ./netbox/configuration:/etc/netbox/config:ro
+    command: /opt/netbox/housekeeping.sh
+    restart: unless-stopped
+    networks:
+      - netaudit
+
+  # ======================
+  # POSTGRESQL - Database
+  # ======================
+  postgres:
+    image: postgres:16-alpine
+    container_name: netaudit-postgres
+    env_file:
+      - .env
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U netbox"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - netaudit
+
+  # ======================
+  # REDIS - Cache
+  # ======================
+  redis:
+    image: redis:7-alpine
+    container_name: netaudit-redis
+    command: redis-server --appendonly yes
+    volumes:
+      - redis-data:/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+    networks:
+      - netaudit
+
+  redis-cache:
+    image: redis:7-alpine
+    container_name: netaudit-redis-cache
+    command: redis-server
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+    networks:
+      - netaudit
+
+  # ======================
+  # SCANNER - Network Discovery
+  # ======================
+  scanner:
+    build:
+      context: ./scanner
+      dockerfile: Dockerfile
+    image: netaudit-scanner:latest
+    container_name: netaudit-scanner
+    # REMOVIDO: network_mode: host
+    env_file:
+      - .env
+    volumes:
+      - ./scanner/config:/app/config:ro
+      - scanner-logs:/app/logs
+    depends_on:
+      netbox:
+        condition: service_healthy
+    restart: unless-stopped
+    # Privilegios de red para nmap
+    cap_add:
+      - NET_ADMIN
+      - NET_RAW
+    # Usar la red de Docker
+    networks:
+      - netaudit
+    labels:
+      ofelia.enabled: "true"
+      ofelia.job-exec.scan-network.schedule: "0 0 0 * * *"
+      ofelia.job-exec.scan-network.command: "python /app/scan.py"
+      ofelia.job-exec.scan-network.user: "root"
+
+  # ======================
+  # OFELIA - Cron Scheduler
+  # ======================
+  ofelia:
+    image: mcuadros/ofelia:latest
+    container_name: netaudit-ofelia
+    depends_on:
+      - scanner
+    command: daemon --docker
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    restart: unless-stopped
+    networks:
+      - netaudit
+    labels:
+      ofelia.enabled: "true"
+
+  # ======================
+  # OFELIA UI - Web Interface
+  # ======================
+  ofelia-ui:
+    image: nginx:alpine
+    container_name: netaudit-ofelia-ui
+    volumes:
+      - ./ofelia-ui:/usr/share/nginx/html:ro
+    ports:
+      - "8180:80"
+    restart: unless-stopped
+    networks:
+      - netaudit
+
+networks:
+  netaudit:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.24.0.0/16
+
+volumes:
+  postgres-data:
+    driver: local
+  redis-data:
+    driver: local
+  netbox-media:
+    driver: local
+  netbox-reports:
+    driver: local
+  netbox-scripts:
+    driver: local
+  scanner-logs:
+    driver: local

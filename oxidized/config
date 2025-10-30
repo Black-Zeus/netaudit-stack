@@ -1,0 +1,73 @@
+---
+# Oxidized Configuration for NetAudit HomeStack
+
+# Usuario y contraseña por defecto (se puede sobreescribir por dispositivo)
+username: admin
+password: changeme
+
+# Intervalo de backup (en segundos) - 3600 = 1 hora
+interval: 3600
+
+# Timeout para conexión
+timeout: 20
+
+# Reintentos
+retries: 3
+
+# Log
+log: ~/.config/oxidized/log
+
+# Directorio donde se guardan las configs
+crash:
+  directory: ~/.config/oxidized/crashes
+  hostnames: false
+
+# Usar Git para versionar las configuraciones
+output:
+  default: git
+  git:
+    user: Oxidized
+    email: oxidized@homelab.local
+    repo: "~/.config/oxidized/configs.git"
+
+# Origen de la lista de dispositivos
+source:
+  default: csv
+  csv:
+    file: ~/.config/oxidized/router.db
+    delimiter: !ruby/regexp /:/
+    map:
+      name: 0
+      model: 1
+      ip: 2
+      username: 3
+      password: 4
+
+# Modelos soportados
+# Huawei no está nativamente soportado, usaremos http
+# Alternativamente, si tienen telnet/ssh habilitado, se puede usar
+models:
+  huawei:
+    prompt: !ruby/regexp /<.+>/
+    cmd: |
+      display current-configuration
+
+# Interfaz web
+rest: 0.0.0.0:8888
+
+# Habilitar estadísticas
+stats:
+  history_size: 10
+
+# Next-run addition (para forzar re-scan de dispositivos específicos)
+next_adds_job: false
+
+# Hooks (opcional - para notificaciones)
+# hooks:
+#   email_output:
+#     type: emaildiff
+#     events: [post_store]
+#     from: oxidized@homelab.local
+#     to: admin@homelab.local
+#     host: localhost
+#     port: 25
